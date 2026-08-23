@@ -5,3 +5,4 @@ artifacts/
 out/
 data/
 .pytest_cache/
+.env

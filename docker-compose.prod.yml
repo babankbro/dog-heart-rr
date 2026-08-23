@@ -1,0 +1,39 @@
+# สำหรับรันบนเซิร์ฟเวอร์จริง — ต่างจาก docker-compose.yml ตรงที่
+#   - โค้ดถูก build เข้า image ไม่ mount จากดิสก์ (เซิร์ฟเวอร์ไม่มีโค้ดให้แก้สด ๆ)
+#   - พอร์ต 8000 ไม่เปิดออกนอกเครื่อง มีแค่ caddy ที่เข้าถึงได้
+#   - caddy เป็นตัวรับ HTTPS + ขอใบรับรองให้เอง + ใส่รหัสผ่านหน้าเว็บ
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+services:
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    expose:
+      - "8000"                       # เห็นได้เฉพาะใน network ของ compose
+    volumes:
+      - ./models:/app/models:ro      # weights ต้อง scp ขึ้นมาเอง ไม่ได้อยู่ใน git
+      - ./data:/app/data             # ภาพผู้ป่วย
+      - ./out:/app/out
+    command: ["uvicorn", "webapp.server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [web]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?ตั้งค่าใน .env ก่อน เช่น ekg.example.com หรือ :80}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?ตั้งค่าใน .env}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?ตั้งค่าใน .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data             # เก็บใบรับรอง ห้ามลบ ไม่งั้นโดน rate limit ของ Let's Encrypt
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
