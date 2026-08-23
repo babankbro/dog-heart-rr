@@ -23,8 +23,11 @@ services:
     restart: unless-stopped
     depends_on: [web]
     ports:
-      - "80:80"
-      - "443:443"
+      # ย้ายพอร์ตได้ถ้าเครื่องมี nginx/apache ครองอยู่ เช่น HTTP_PORT=8080
+      # แต่ถ้าใช้โดเมนเพื่อขอใบรับรองอัตโนมัติ ต้องเป็น 80/443 เท่านั้น
+      # เพราะ Let's Encrypt ยิงมาที่พอร์ตมาตรฐานเสมอ
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:?ตั้งค่าใน .env ก่อน เช่น ekg.example.com หรือ :80}
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:?ตั้งค่าใน .env}

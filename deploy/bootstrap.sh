@@ -7,7 +7,13 @@
 #               หรือ :80 ถ้ายังไม่มีโดเมน (ไม่มี HTTPS รหัสผ่านวิ่งแบบไม่เข้ารหัส)
 # WEB_USER      ชื่อผู้ใช้สำหรับเข้าหน้าเว็บ
 # WEB_PASS      รหัสผ่านหน้าเว็บ — สคริปต์แปลงเป็น bcrypt hash ให้ ไม่เก็บตัวรหัสลงดิสก์
+# HTTP_PORT     พอร์ตบนเครื่อง ปกติ 80 ย้ายได้ถ้ามีเว็บเซิร์ฟเวอร์อื่นครองอยู่
+# HTTPS_PORT    ปกติ 443
 set -euo pipefail
+
+HTTP_PORT=${HTTP_PORT:-80}
+HTTPS_PORT=${HTTPS_PORT:-443}
+export HTTP_PORT HTTPS_PORT
 
 REPO=https://github.com/babankbro/dog-heart-rr.git
 APP_DIR=${APP_DIR:-/root/ekg}
@@ -43,6 +49,37 @@ fi
 
 avail=$(df -Pm /var/lib/docker 2>/dev/null | awk 'NR==2{print $4}' || df -Pm / | awk 'NR==2{print $4}')
 [ "${avail:-0}" -ge 6000 ] || die "ที่ว่างเหลือ ${avail} MB ต้องมีอย่างน้อย 6000 MB (image มี torch อยู่ข้างใน)"
+
+# ---------- 2b. พอร์ตว่างไหม ----------
+# VPS หลายเจ้าลง nginx/apache มาให้ ครองพอร์ต 80 อยู่ ถ้าไม่เช็คก่อน docker จะพัง
+# กลางทางด้วย "address already in use" ซึ่งอ่านแล้วไม่รู้ว่าใครถือพอร์ตอยู่
+port_holder() {
+	ss -lptnH "sport = :$1" 2>/dev/null | grep -oP 'users:\(\("\K[^"]+' | sort -u | tr '\n' ' '
+}
+for pair in "$HTTP_PORT:http" "$HTTPS_PORT:https"; do
+	port=${pair%%:*}
+	proto=${pair##*:}
+	holder=$(port_holder "$port")
+	# คอนเทนเนอร์ของเราเองที่รันอยู่แล้วไม่นับ เดี๋ยว compose จัดการให้
+	if [ -n "$holder" ] && ! echo "$holder" | grep -q docker; then
+		printf '\n\033[1;31mพอร์ต %s (%s) ถูก %s ใช้อยู่\033[0m\n' "$port" "$proto" "$holder"
+		cat <<-EOF
+
+			เลือกทางใดทางหนึ่ง
+
+			1) ปิดตัวที่ครองอยู่ (ทำเมื่อไม่ได้ใช้งานมันแล้ว)
+			     systemctl disable --now ${holder%% *}
+
+			2) ย้ายพอร์ตของระบบนี้แทน แล้วรันสคริปต์ใหม่
+			     HTTP_PORT=8080 HTTPS_PORT=8443 SITE_ADDRESS=:80 ... bash bootstrap.sh
+			   ข้อควรรู้: ถ้าใช้โดเมนเพื่อขอใบรับรอง HTTPS อัตโนมัติ ทางนี้ใช้ไม่ได้
+			   Let's Encrypt ยิงมาที่พอร์ต 80/443 เท่านั้น ต้องเลือกทาง 1
+
+			3) ให้ตัวที่ครองอยู่ proxy ต่อมาที่นี่ — ดู deploy/README.md
+		EOF
+		exit 1
+	fi
+done
 
 # ---------- 3. โค้ด ----------
 if [ -d "$APP_DIR/.git" ]; then
@@ -88,31 +125,42 @@ else
 	unset WEB_PASS
 fi
 
+# พอร์ตต้องอยู่ใน .env ด้วย ไม่งั้นครั้งหน้าที่สั่ง docker compose ตรง ๆ จะกลับไปใช้ 80/443
+for kv in "HTTP_PORT=$HTTP_PORT" "HTTPS_PORT=$HTTPS_PORT"; do
+	key=${kv%%=*}
+	if grep -q "^$key=" .env; then
+		sed -i "s|^$key=.*|$kv|" .env
+	else
+		echo "$kv" >>.env
+	fi
+done
+
 # ---------- 6. build + start ----------
 say 'build (ครั้งแรกใช้เวลาหลายนาที กำลังโหลด torch)'
 $COMPOSE up -d --build
 
 # ---------- 7. ไฟร์วอลล์ ----------
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active'; then
-	say 'เปิดพอร์ต 80/443 บน ufw'
-	ufw allow 80/tcp >/dev/null
-	ufw allow 443/tcp >/dev/null
+	say "เปิดพอร์ต $HTTP_PORT/$HTTPS_PORT บน ufw"
+	ufw allow "$HTTP_PORT/tcp" >/dev/null
+	ufw allow "$HTTPS_PORT/tcp" >/dev/null
 fi
 
 # ---------- 8. ตรวจว่าขึ้นจริง ----------
 say 'รอให้บริการพร้อม'
 site=$(grep '^SITE_ADDRESS=' .env | cut -d= -f2-)
 for _ in $(seq 30); do
-	code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost/ || true)
+	code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$HTTP_PORT/" || true)
 	[ "$code" = '401' ] && break      # 401 คือถูกแล้ว แปลว่า caddy กั้นรหัสผ่านอยู่
 	sleep 2
 done
 
 $COMPOSE ps
 if [ "${code:-}" = '401' ]; then
+	ip=$(hostname -I | awk '{print $1}')
 	case "$site" in
-	:*) url="http://$(hostname -I | awk '{print $1}')" ;;
-	*) url="https://$site" ;;
+	:*) url="http://$ip"; [ "$HTTP_PORT" = 80 ] || url="$url:$HTTP_PORT" ;;
+	*) url="https://$site"; [ "$HTTPS_PORT" = 443 ] || url="$url:$HTTPS_PORT" ;;
 	esac
 	say "พร้อมใช้งาน: $url  (ล็อกอินด้วยผู้ใช้ที่ตั้งไว้)"
 else
