@@ -1,0 +1,53 @@
+services:
+  # หน้าเว็บดูผล — docker compose up  แล้วเปิด http://localhost:8000
+  web:
+    build:
+      context: .
+      target: web
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ekg_rpeak:/app/ekg_rpeak:ro
+      - ./webapp:/app/webapp:ro
+      - ./models:/app/models:ro
+      - ./data:/app/data
+      - ./out:/app/out
+    command: ["uvicorn", "webapp.server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # ชุดทดสอบเร็ว: docker compose run --rm test
+  test:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: test
+    volumes:
+      - ./ekg_rpeak:/app/ekg_rpeak:ro
+      - ./tests:/app/tests:ro
+    command: ["pytest", "-v"]
+
+  # ใช้งานผ่านบรรทัดคำสั่ง: docker compose run --rm app detect --images data --out out/r_peaks.csv
+  app:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: runtime
+    volumes:
+      - ./ekg_rpeak:/app/ekg_rpeak:ro
+      - ./models:/app/models:ro
+      - ./data:/app/data:ro
+      - ./out:/app/out
+    command: ["--help"]
+
+  # ชุดทดสอบเต็ม รวม integration test ที่ต้องใช้ weights จริง
+  test-full:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: runtime
+    volumes:
+      - ./ekg_rpeak:/app/ekg_rpeak:ro
+      - ./tests:/app/tests:ro
+      - ./models:/app/models:ro
+      - ./data:/app/data:ro
+    entrypoint: []
+    command: ["pytest", "-v"]

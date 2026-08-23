@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EKG R-Peak Viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>EKG R-Peak Viewer</h1>
+  <div id="health" class="health"></div>
+</header>
+
+<main>
+  <aside class="panel">
+    <section>
+      <div class="row spread">
+        <h2>สัตว์</h2>
+        <button id="migrateBtn" class="btn tiny ghost"
+                title="ย้ายภาพที่วางแบน ๆ ใน data/ เข้าโฟลเดอร์ตามรหัสในชื่อไฟล์">จัดกลุ่มภาพเดิม</button>
+      </div>
+      <select id="patientSelect" size="6"></select>
+      <div class="row">
+        <button id="newPatientBtn" class="btn">+ เพิ่มตัวใหม่</button>
+        <button id="editPatientBtn" class="btn ghost">แก้ชื่อ</button>
+        <button id="delPatientBtn" class="btn ghost danger">ลบ</button>
+      </div>
+
+      <form id="newPatientForm" class="subform" hidden>
+        <label>รหัส <input id="npId" type="text" placeholder="เช่น D001" required></label>
+        <label>ชื่อ <input id="npName" type="text" placeholder="เช่น Buddy"></label>
+        <label>หมายเหตุ <input id="npNote" type="text" placeholder="พันธุ์ / อายุ / อาการ"></label>
+        <div class="row">
+          <button type="submit" class="btn primary tiny">สร้าง</button>
+          <button type="button" id="npCancel" class="btn ghost tiny">ยกเลิก</button>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <div class="row spread">
+        <h2>ภาพของตัวนี้</h2>
+        <span id="imgCount" class="muted"></span>
+      </div>
+      <select id="imageSelect" size="6"></select>
+      <div class="row">
+        <label class="btn file">
+          + เพิ่มภาพ
+          <input id="uploader" type="file" accept=".jpg,.jpeg,.png" multiple hidden>
+        </label>
+        <button id="delImageBtn" class="btn ghost danger">ลบภาพ</button>
+      </div>
+      <button id="analyzeBtn" class="btn primary">วิเคราะห์ทั้งตัว</button>
+      <button id="runBtn" class="btn">ตรวจจับเฉพาะภาพนี้</button>
+      <p id="err" class="err"></p>
+    </section>
+
+    <section>
+      <div class="row spread">
+        <h2>ตัวเลือก</h2>
+        <button id="resetOptsBtn" class="btn tiny ghost"
+                title="ดึงค่าเริ่มต้นจากเซิร์ฟเวอร์มาใส่ใหม่">คืนค่าเริ่มต้น</button>
+      </div>
+      <label>แหล่งที่มาของจุด
+        <select id="point_mode">
+          <option value="refine">refine — anchor + โมเดลขัดเกลา</option>
+          <option value="model_only">model_only — เชื่อโมเดลอย่างเดียว</option>
+          <option value="anchor_only">anchor_only — ไม่ใช้โมเดลจุด</option>
+        </select>
+      </label>
+      <label>รูปแบบครอป
+        <select id="crop_mode">
+          <option value="train_match">train_match — ตามสัดส่วนชุดเทรน</option>
+          <option value="mm">mm — อิงเส้นกริด</option>
+          <option value="anchored">anchored — ขยายจากกล่อง</option>
+          <option value="height">height — อิงความสูงกล่อง</option>
+          <option value="pitch">pitch — อิงระยะ RR</option>
+          <option value="box">box — อิงความกว้างกล่อง</option>
+          <option value="stretch">stretch — ยืดกล่องเป็นจัตุรัส</option>
+        </select>
+      </label>
+      <label>preprocessing ของโมเดลจุด
+        <select id="point_pre">
+          <option value="ink">ink — ลบกริด (ตรงกับ weights ปัจจุบัน)</option>
+          <option value="gray">gray</option>
+          <option value="gray_contrast">gray_contrast</option>
+          <option value="none">none</option>
+        </select>
+      </label>
+      <div class="grid2">
+        <label>คลาส R <input id="r_class_id" type="number" placeholder="5"></label>
+        <label>px ต่อ mm <input id="px_per_mm" type="number" step="0.1" placeholder="auto"></label>
+        <label>crop conf <input id="crop_conf" type="number" step="0.05"></label>
+        <label>point conf <input id="point_conf" type="number" step="0.05"></label>
+      </div>
+    </section>
+  </aside>
+
+  <section class="content">
+    <div id="viewing" class="viewing" hidden></div>
+    <div id="stats" class="stats"></div>
+    <div id="warn" class="warn" hidden></div>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="patient">ภาพรวมของสัตว์</button>
+      <button class="tab" data-tab="overlay">ภาพผลลัพธ์</button>
+      <button class="tab" data-tab="rr">RR interval (mm)</button>
+      <button class="tab" data-tab="crops">ครอปที่ป้อนโมเดล</button>
+      <button class="tab" data-tab="mask">ink mask</button>
+      <button class="tab" data-tab="table">ตารางจุด R</button>
+    </nav>
+
+    <div id="tab-patient" class="tabpane">
+      <div id="patientHead" class="patient-head"></div>
+      <div id="patientAgg" class="stats"></div>
+      <div id="patientGrid" class="pgrid"></div>
+    </div>
+
+    <div id="tab-overlay" class="tabpane" hidden>
+      <div class="row toolbar">
+        <label class="chk"><input id="showBoxes" type="checkbox" checked> กรอบจังหวะ</label>
+        <label class="chk"><input id="showMarks" type="checkbox" checked> จุด R</label>
+        <label class="chk"><input id="showLandmarks" type="checkbox" checked> จุดอื่น ๆ ของโมเดล</label>
+        <label class="chk"><input id="showOrigin" type="checkbox" checked> เส้นอ้างอิง x=0</label>
+        <label class="chk"><input id="showGrid" type="checkbox"> เส้นกริด 5 mm</label>
+        <label>ความกว้าง <input id="zoom" type="range" min="600" max="6000" step="100" value="1600"></label>
+        <span class="legend"><i class="dot red"></i>R จากโมเดล <i class="dot orange"></i>R จาก anchor <i class="dot faint"></i>landmark อื่น <i class="dot green"></i>กรอบจังหวะ</span>
+      </div>
+      <div class="scroller"><img id="overlay" alt=""></div>
+    </div>
+
+    <div id="tab-rr" class="tabpane" hidden>
+      <p class="hint">ระยะทั้งหมดวัดจากเส้นกริดหลักของภาพ (เส้นละ 5 mm)
+        โดยใช้เส้นที่อยู่นอกจังหวะซ้ายสุดเป็น x = 0</p>
+      <div id="rrSummary" class="stats"></div>
+      <div id="rrChart" class="chartbox"></div>
+      <div class="scroller"><table id="rrTable"></table></div>
+    </div>
+
+    <div id="tab-crops" class="tabpane" hidden>
+      <p class="hint">กากบาทเขียว = ตำแหน่งที่ชุดเทรนวางยอด R ไว้ ครอปเหล่านี้ควรหน้าตาเหมือนภาพชุดเทรนโมเดลจุด</p>
+      <div class="scroller"><img id="crops" alt=""></div>
+    </div>
+
+    <div id="tab-mask" class="tabpane" hidden>
+      <p class="hint">ซ้าย = ภาพจริงของจังหวะ ขวา = ink mask ที่ใช้หายอด R ถ้ามีแถบตั้งพาดเต็มความสูงแปลว่าเส้นกริดหลุดเข้ามา<br>
+        <i class="dot green"></i>anchor จาก image processing <i class="dot red"></i>R จากโมเดล <i class="dot orange"></i>R ที่ใช้ค่าจาก anchor <i class="dot faint"></i>landmark อื่น</p>
+      <label>จังหวะที่ <input id="maskIndex" type="number" min="0" value="0" style="width:5rem"></label>
+      <div class="scroller"><img id="mask" alt=""></div>
+    </div>
+
+    <div id="tab-table" class="tabpane" hidden>
+      <div class="row toolbar">
+        <a id="csvLink" class="btn ghost" href="#">ดาวน์โหลด CSV</a>
+        <label class="chk"><input id="onlyFlagged" type="checkbox"> เฉพาะแถวที่ติด flag</label>
+      </div>
+      <div class="scroller"><table id="table"></table></div>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+.git
+.venv
+artifacts/
+data/
+out/
+models/*.pt
+**/__pycache__
+*.ipynb
