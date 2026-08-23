@@ -112,17 +112,36 @@ if [ -f .env ]; then
 	say 'ใช้ .env เดิม (ลบทิ้งถ้าอยากตั้งใหม่)'
 else
 	: "${SITE_ADDRESS:?ต้องตั้ง SITE_ADDRESS เช่น ekg.example.com หรือ :80}"
-	: "${WEB_USER:?ต้องตั้ง WEB_USER}"
-	: "${WEB_PASS:?ต้องตั้ง WEB_PASS}"
 	say 'สร้าง .env'
+	umask 077
+	echo "SITE_ADDRESS=$SITE_ADDRESS" >.env
+fi
+
+# ---------- 5b. ด่านรหัสผ่านหน้าเว็บ ----------
+# มีไฟล์ใน deploy/auth/ = ถามรหัส, ไม่มี = เปิดสาธารณะ
+mkdir -p deploy/auth
+if [ "${NO_AUTH:-0}" = 1 ]; then
+	rm -f deploy/auth/basic.caddy
+	cat <<-'EOF'
+
+		 ┌──────────────────────────────────────────────────────────────┐
+		 │  NO_AUTH=1 — หน้าเว็บจะเปิดสาธารณะ ไม่มีรหัสผ่าน             │
+		 │  ใครรู้ที่อยู่ก็เข้าดู ดาวน์โหลด และลบภาพได้ทั้งหมด           │
+		 │  เปลี่ยนใจภายหลังได้ด้วย WEB_USER=... WEB_PASS=... รันซ้ำ     │
+		 └──────────────────────────────────────────────────────────────┘
+	EOF
+elif [ -n "${WEB_PASS:-}" ]; then
+	: "${WEB_USER:?ตั้ง WEB_PASS แล้วต้องตั้ง WEB_USER ด้วย}"
+	say 'ตั้งรหัสผ่านหน้าเว็บ'
 	hash=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext "$WEB_PASS")
 	umask 077
-	cat >.env <<-EOF
-		SITE_ADDRESS=$SITE_ADDRESS
-		BASIC_AUTH_USER=$WEB_USER
-		BASIC_AUTH_HASH=$hash
-	EOF
+	printf 'basic_auth {\n\t%s %s\n}\n' "$WEB_USER" "$hash" >deploy/auth/basic.caddy
 	unset WEB_PASS
+elif [ -f deploy/auth/basic.caddy ]; then
+	say 'ใช้รหัสผ่านหน้าเว็บเดิม'
+else
+	die 'ต้องเลือกอย่างใดอย่างหนึ่ง: ตั้ง WEB_USER กับ WEB_PASS เพื่อใส่รหัสผ่าน
+     หรือ NO_AUTH=1 เพื่อเปิดสาธารณะโดยไม่มีรหัส (ใครก็เข้าดูภาพได้)'
 fi
 
 # พอร์ตต้องอยู่ใน .env ด้วย ไม่งั้นครั้งหน้าที่สั่ง docker compose ตรง ๆ จะกลับไปใช้ 80/443
@@ -149,22 +168,29 @@ fi
 # ---------- 8. ตรวจว่าขึ้นจริง ----------
 say 'รอให้บริการพร้อม'
 site=$(grep '^SITE_ADDRESS=' .env | cut -d= -f2-)
+# มีด่านรหัส -> ต้องได้ 401, เปิดสาธารณะ -> ต้องได้ 200
+if [ -f deploy/auth/basic.caddy ]; then want=401; else want=200; fi
 for _ in $(seq 30); do
 	code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$HTTP_PORT/" || true)
-	[ "$code" = '401' ] && break      # 401 คือถูกแล้ว แปลว่า caddy กั้นรหัสผ่านอยู่
+	[ "$code" = "$want" ] && break
 	sleep 2
 done
 
 $COMPOSE ps
-if [ "${code:-}" = '401' ]; then
+if [ "${code:-}" = "$want" ]; then
 	ip=$(hostname -I | awk '{print $1}')
 	case "$site" in
 	:*) url="http://$ip"; [ "$HTTP_PORT" = 80 ] || url="$url:$HTTP_PORT" ;;
 	*) url="https://$site"; [ "$HTTPS_PORT" = 443 ] || url="$url:$HTTPS_PORT" ;;
 	esac
-	say "พร้อมใช้งาน: $url  (ล็อกอินด้วยผู้ใช้ที่ตั้งไว้)"
+	if [ -f deploy/auth/basic.caddy ]; then
+		say "พร้อมใช้งาน: $url  (ล็อกอินด้วยผู้ใช้ที่ตั้งไว้)"
+	else
+		say "พร้อมใช้งาน: $url  (ไม่มีรหัสผ่าน เปิดสาธารณะ)"
+	fi
 else
-	printf '\n\033[1;31mยังไม่ตอบตามที่ควร (ได้ %s) ดู log ด้วย:\033[0m\n' "${code:-ไม่มี}"
+	printf '\n\033[1;31mยังไม่ตอบตามที่ควร (ได้ %s คาด %s) ดู log ด้วย:\033[0m\n' \
+		"${code:-ไม่มี}" "$want"
 	printf '  cd %s && %s logs --tail 50\n' "$APP_DIR" "$COMPOSE"
 	exit 1
 fi

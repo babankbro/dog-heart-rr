@@ -30,10 +30,10 @@ services:
       - "${HTTPS_PORT:-443}:443"
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:?ตั้งค่าใน .env ก่อน เช่น ekg.example.com หรือ :80}
-      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?ตั้งค่าใน .env}
-      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?ตั้งค่าใน .env}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # มีไฟล์ .caddy ในนี้ = ถามรหัสผ่าน / ว่าง = เปิดสาธารณะ
+      - ./deploy/auth:/etc/caddy/auth:ro
       - caddy_data:/data             # เก็บใบรับรอง ห้ามลบ ไม่งั้นโดน rate limit ของ Let's Encrypt
       - caddy_config:/config
 

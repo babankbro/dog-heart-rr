@@ -6,3 +6,4 @@ out/
 data/
 .pytest_cache/
 .env
+deploy/auth/*.caddy    # มี bcrypt hash ของรหัสหน้าเว็บ สร้างบนเซิร์ฟเวอร์เท่านั้น
