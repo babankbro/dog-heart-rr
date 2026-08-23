@@ -9,8 +9,14 @@ let currentRev = 0;      // เลขรุ่นของผล ใช้ทำ
 let lastData = null;     // ผลตรวจจับของภาพเดี่ยว
 let patientData = null;  // ผลวิเคราะห์ทั้งตัว
 
+// รองรับการติดตั้งใต้ path ย่อย เช่น http://host/heart/ โดยไม่ต้องตั้งค่าอะไรเพิ่ม
+// คิดฐานจากที่อยู่ของหน้าเว็บเอง: /heart/ -> '/heart', / -> '' (เหมือนเดิมทุกประการ)
+// ตัว reverse proxy ต้อง redirect /heart ไป /heart/ ก่อน ไม่งั้นฐานจะถูกตัดหายไป
+const BASE = location.pathname.replace(/\/[^/]*$/, '');
+const u = (path) => BASE + path;
+
 async function api(url, opts) {
-  const res = await fetch(url, opts);
+  const res = await fetch(u(url), opts);
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).detail || msg; } catch (e) { /* ไม่ใช่ json */ }
@@ -314,19 +320,19 @@ function refreshOverlay() {
     rev: currentRev,
   });
   const img = $('overlay');
-  img.src = '/api/overlay?' + q;
+  img.src = u('/api/overlay?') + q;
   img.style.width = $('zoom').value + 'px';
   img.style.maxWidth = 'none';
 }
 
 const refreshCrops = () => {
   if (current) $('crops').src =
-    `/api/crops?image=${encodeURIComponent(current)}&n=8&rev=${currentRev}`;
+    u(`/api/crops?image=${encodeURIComponent(current)}&n=8&rev=${currentRev}`);
 };
 const refreshMask = () => {
   if (!current) return;
   const i = Math.max(0, parseInt($('maskIndex').value || '0', 10));
-  $('mask').src = `/api/mask?image=${encodeURIComponent(current)}&index=${i}&rev=${currentRev}`;
+  $('mask').src = u(`/api/mask?image=${encodeURIComponent(current)}&index=${i}&rev=${currentRev}`);
 };
 
 function setViewing(name, busy) {
@@ -351,7 +357,7 @@ async function run() {
     currentRev = d.rev;
     lastData = d;
     renderStats(d); renderTable(d); renderRR(d);
-    $('csvLink').href = '/api/csv?image=' + encodeURIComponent(name);
+    $('csvLink').href = u('/api/csv?image=' + encodeURIComponent(name));
     $('maskIndex').max = Math.max(0, d.stats.n_boxes - 1);
     refreshOverlay(); refreshCrops(); refreshMask();
     setViewing(name, false);
