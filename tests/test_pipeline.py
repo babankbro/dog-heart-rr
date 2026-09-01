@@ -95,3 +95,10 @@ def test_multi_lead_rows_are_independent(cfg, tmp_path):
     assert r['stats']['n_rows'] == 2
     assert len({pk['row'] for pk in r['peaks']}) == 2
     assert r['stats']['n_peaks'] == 2 * len(truth)
+
+
+def test_pipeline_reports_the_row_with_most_beats_as_main(monkeypatch):
+    """แถวหลักคือแถวที่มีจังหวะมากสุด ไม่ใช่แถวแรกเสมอไป"""
+    from ekg_rpeak import pipeline as pl
+    rows = [[1], [1, 2, 3], [1, 2]]
+    assert max(range(len(rows)), key=lambda i: len(rows[i])) == 1

@@ -11,6 +11,10 @@ import numpy as np
 from .config import Config
 
 
+CROP_PRE_MODES = ('blackhat', 'blackhat_otsu', 'tophat_gray', 'tophat_red',
+                  'adaptive', 'ink', 'red')
+
+
 def blackhat_preprocess(img_bgr: np.ndarray, cfg: Config) -> np.ndarray:
     """ใช้กับโมเดลครอปเท่านั้น — ค่า ksize/thr ต้องตรงกับสคริปต์ที่ใช้เทรน"""
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -20,22 +24,139 @@ def blackhat_preprocess(img_bgr: np.ndarray, cfg: Config) -> np.ndarray:
     return cv2.cvtColor(cv2.bitwise_not(t), cv2.COLOR_GRAY2BGR)
 
 
+def _black_on_white(mask: np.ndarray) -> np.ndarray:
+    """mask ของเส้น (True = เส้น) -> ภาพ BGR เส้นดำพื้นขาว แบบเดียวกับที่โมเดลครอปเห็น"""
+    out = np.full(mask.shape, 255, np.uint8)
+    out[mask] = 0
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def hysteresis(strong: np.ndarray, weak: np.ndarray) -> np.ndarray:
+    """เก็บกลุ่มพิกเซลของ weak เฉพาะกลุ่มที่แตะ strong
+
+    ใช้กับเส้นที่ปลายจาง: แกนเส้นผ่านเกณฑ์เข้มอยู่แล้ว ส่วนปลายผ่านแค่เกณฑ์อ่อน
+    การต่อยอดจากแกนจึงได้ปลายกลับมาโดยไม่ลากกระดาษหรือกริดที่จางพอกันเข้ามาด้วย
+    """
+    if not strong.any():
+        return strong
+    n, lab = cv2.connectedComponents(weak.astype(np.uint8), connectivity=8)
+    keep = np.zeros(n, dtype=bool)
+    keep[np.unique(lab[strong])] = True
+    keep[0] = False                       # พื้นหลัง
+    return keep[lab]
+
+
+def _join(mask: np.ndarray, cfg: Config) -> np.ndarray:
+    """เชื่อมเส้นที่ขาดเป็นช่วง ๆ แล้วทำให้หนาขึ้น
+
+    เส้นคลื่นที่สแกนมาจางบางช่วง binarization จึงทำให้เส้นขาดเป็นท่อน ๆ
+    โมเดลที่เทรนบนเส้นต่อเนื่องจะอ่านเส้นขาดไม่ออก
+    """
+    out = mask.astype(np.uint8)
+    if cfg.crop_pre_close > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (cfg.crop_pre_close,) * 2)
+        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, k)
+    if cfg.crop_pre_dilate > 0:
+        out = cv2.dilate(out, np.ones((cfg.crop_pre_dilate,) * 2, np.uint8))
+    return out.astype(bool)
+
+
+def crop_preprocess(img_bgr: np.ndarray, cfg: Config) -> np.ndarray:
+    """ภาพที่ป้อนโมเดลครอป เลือกวิธี binarization ได้ด้วย cfg.crop_pre
+
+    'blackhat' คือวิธีที่ weights ชุดนี้เห็นตอนเทรน ตัวเลือกอื่นมีไว้เปรียบเทียบ
+    ว่าวิธีไหนเก็บปลายยอด R ที่หมึกจางไว้ได้ — วิธีเดิมตัดทิ้ง กล่องจึงคร่อมยอดไม่มิด
+    การเปลี่ยนค่านี้คือการเปลี่ยนโดเมนที่โมเดลเห็น ต้องวัดผลก่อนใช้จริงเสมอ
+
+    blackhat      blackhat + threshold คงที่ (ตามชุดเทรน)
+    blackhat_otsu blackhat + Otsu — เกณฑ์ปรับตามภาพเอง
+    tophat_gray   ลบพื้นหลังด้วย opening แล้ว threshold ตามคอนทราสต์ของภาพนั้น
+    adaptive      adaptive threshold บนภาพเทา — ทนต่อความสว่างไม่สม่ำเสมอ
+    ink           mask เดียวกับที่โมเดลจุดใช้ (ตัดกริดด้วยสี ไม่ใช่ความเข้ม)
+    red           ใช้แชนเนลแดงอย่างเดียว กริดหมึกแดงจึงเกือบหายไปเอง
+
+    crop_pre_close / crop_pre_dilate ใช้ต่อท้ายทุกโหมดยกเว้น 'blackhat'
+    สำหรับเชื่อมเส้นที่ขาดเป็นช่วง ๆ และทำให้เส้นหนาขึ้นก่อนส่งเข้าโมเดล
+    """
+    mode = cfg.crop_pre
+    if mode == 'blackhat':
+        return blackhat_preprocess(img_bgr, cfg)   # ตรงกับชุดเทรน ห้ามแต่งเพิ่ม
+
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    if mode == 'blackhat_otsu':
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (cfg.blackhat_ksize,) * 2)
+        bh = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        _, t = cv2.threshold(bh, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return _black_on_white(_join(t > 0, cfg))
+    if mode in ('tophat_gray', 'tophat_red'):
+        # closing ด้วยแกนใหญ่ = ภาพพื้นหลัง (กระดาษ + กริด) ส่วนที่เข้มกว่าพื้นหลังคือเส้น
+        #
+        # ทำบนแชนเนลแดงได้ด้วย: กริดพิมพ์หมึกแดงจึงสว่างเกือบเท่ากระดาษในแชนเนลนั้น
+        # พื้นหลังที่ต้องลบจึงเรียบกว่า เส้นคลื่นที่พาดทับเส้นกริดพอดีไม่ถูกกริดกลบ
+        base = img_bgr[:, :, 2] if mode == 'tophat_red' else gray
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (cfg.crop_pre_ksize,) * 2)
+        bg = cv2.morphologyEx(base, cv2.MORPH_CLOSE, k)
+        diff = cv2.subtract(bg, base)
+        return _black_on_white(_join(diff > cfg.crop_pre_thr, cfg))
+    if mode == 'adaptive':
+        t = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                  cv2.THRESH_BINARY, cfg.crop_pre_block | 1, cfg.crop_pre_c)
+        return _black_on_white(_join(t == 0, cfg))
+    if mode == 'ink':
+        return _black_on_white(_join(keep_trace(ink_mask(img_bgr, cfg), cfg), cfg))
+    if mode == 'red':
+        # แชนเนลแดง: กริดหมึกแดงสว่างเกือบเท่ากระดาษ เส้นคลื่นสีดำยังเข้ม
+        red = img_bgr[:, :, 2]
+        # cv2 นับ foreground เป็น > t เส้นจึงเป็น <= t — ใช้ < จะพลาดทั้งเส้น
+        # เมื่อภาพมีระดับสีน้อยจน Otsu ตกลงบนค่าของเส้นพอดี
+        t, _ = cv2.threshold(red, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        m = red <= t
+        if cfg.crop_pre_hyst > 0:
+            paper = float(np.percentile(red, 90))
+            m = hysteresis(m, red <= t + cfg.crop_pre_hyst * (paper - t))
+        return _black_on_white(_join(keep_trace(m, cfg), cfg))
+    raise ValueError(f'crop_pre ไม่รู้จัก: {mode!r}')
+
+
+POINT_PRE_MODES = ('ink', 'red_ink', 'red_contrast', 'gray', 'gray_contrast', 'none')
+
+
+def stretch(g: np.ndarray) -> np.ndarray:
+    """ดึงคอนทราสต์ให้เต็มช่วง โดยตัดหางบน-ล่างอย่างละ 1% กันพิกเซลหลุดลากสเกล"""
+    lo, hi = np.percentile(g, (1, 99))
+    if hi - lo <= 5:
+        return g
+    return np.clip((g.astype(np.float32) - lo) * 255.0 / (hi - lo), 0, 255).astype(np.uint8)
+
+
+def red_ink_mask(bgr: np.ndarray, cfg: Config) -> np.ndarray:
+    """ink mask ที่หากริดด้วยแชนเนลสีแทน saturation
+
+    ink_mask ตัดกริดด้วย saturation ซึ่งพลาดเมื่อกริดจางจนสีอ่อน แชนเนลแดงตัดกริด
+    ได้ตรงกว่าเพราะกริดพิมพ์ด้วยหมึกแดง แล้วค่อยดึงคอนทราสต์ก่อน threshold
+    เพื่อให้ปลายยอดที่หมึกจางไม่หลุด
+    """
+    red = stretch(bgr[:, :, 2])
+    t, _ = cv2.threshold(red, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return keep_trace(red <= t, cfg)
+
+
 def point_preprocess(bgr: np.ndarray, cfg: Config) -> np.ndarray:
-    """ทำให้ครอปหน้าตาเหมือนชุดเทรนโมเดลจุด: กริดสีกลายเป็นเทา เส้นคลื่นดำ พื้นขาว"""
-    if cfg.point_pre == 'none':
+    """ทำให้ครอปหน้าตาเหมือนชุดเทรนโมเดลจุด: กริดหาย เส้นคลื่นดำ พื้นขาว"""
+    mode = cfg.point_pre
+    if mode == 'none':
         return bgr
-    if cfg.point_pre == 'ink':
+    if mode in ('ink', 'red_ink'):
         # ลบพื้นหลังกริดออกทั้งหมด เหลือเส้นคลื่นดำบนพื้นขาว
         # ใช้ได้ก็ต่อเมื่อชุดเทรนถูกทำแบบเดียวกัน ไม่งั้นจะหลุดโดเมน
-        m = keep_trace(ink_mask(bgr, cfg), cfg)
+        m = (red_ink_mask(bgr, cfg) if mode == 'red_ink'
+             else keep_trace(ink_mask(bgr, cfg), cfg))
         out = np.full_like(bgr, 255)
         out[m] = 0
         return out
-    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    if cfg.point_pre == 'gray_contrast':
-        lo, hi = np.percentile(g, (1, 99))
-        if hi - lo > 5:
-            g = np.clip((g.astype(np.float32) - lo) * 255.0 / (hi - lo), 0, 255).astype(np.uint8)
+    g = bgr[:, :, 2] if mode == 'red_contrast' else cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if mode in ('gray_contrast', 'red_contrast'):
+        g = stretch(g)
     return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
 
 
@@ -218,8 +339,9 @@ def find_r_anchor(raw: np.ndarray, box, cfg: Config, return_debug: bool = False)
     H, W = raw.shape[:2]
     x1, y1, x2, y2 = [int(v) for v in box]
     ex = int((x2 - x1) * cfg.anchor_expand)
+    ey = int((y2 - y1) * cfg.anchor_expand_y)
     X1, X2 = max(0, x1 - ex), min(W, x2 + ex)
-    Y1, Y2 = max(0, y1), min(H, y2)
+    Y1, Y2 = max(0, y1 - ey), min(H, y2 + ey)
     if X2 - X1 < 3 or Y2 - Y1 < 3:
         return (None, None) if return_debug else None
 

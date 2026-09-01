@@ -1,13 +1,20 @@
 const $ = (id) => document.getElementById(id);
 const OPTS = ['point_mode', 'crop_mode', 'point_pre', 'r_class_id',
-              'px_per_mm', 'crop_conf', 'point_conf'];
+              'px_per_mm', 'crop_conf', 'point_conf',
+              'crop_pre', 'blackhat_thr', 'crop_pre_ksize', 'crop_pre_thr',
+              'crop_pre_hyst', 'crop_pre_close', 'crop_pre_dilate'];
+// ค่าที่เปลี่ยนหน้าตาของภาพที่ป้อนโมเดลครอป — ดูผลได้ทันทีโดยไม่ต้องรันตรวจจับ
+const PRE_OPTS = ['crop_pre', 'blackhat_thr', 'crop_pre_ksize', 'crop_pre_thr',
+                  'crop_pre_hyst', 'crop_pre_close', 'crop_pre_dilate'];
 
-let patients = [];       // ทะเบียนสัตว์ทั้งหมด
+let patients = [];       // ทะเบียนสัตว์ทั้งหมด (ก่อนกรอง)
+let groupFilter = '';    // ประเภทที่เลือกกรองอยู่ ว่าง = ทุกประเภท
 let currentPid = null;   // รหัสสัตว์ที่เลือกอยู่
 let current = null;      // ชื่อภาพที่รันล่าสุด
 let currentRev = 0;      // เลขรุ่นของผล ใช้ทำ URL ที่เบราว์เซอร์แคชได้
 let lastData = null;     // ผลตรวจจับของภาพเดี่ยว
 let patientData = null;  // ผลวิเคราะห์ทั้งตัว
+const lastImage = {};    // ภาพที่ดูล่าสุดของสัตว์แต่ละตัว ใช้เปิดหน้าเดิมคืนตอนสลับกลับมา
 
 // รองรับการติดตั้งใต้ path ย่อย เช่น http://host/heart/ โดยไม่ต้องตั้งค่าอะไรเพิ่ม
 // คิดฐานจากที่อยู่ของหน้าเว็บเอง: /heart/ -> '/heart', / -> '' (เหมือนเดิมทุกประการ)
@@ -53,20 +60,39 @@ async function loadHealth() {
                           mark(h.point_weights, 'point weights');
 }
 
+function fillGroupFilter() {
+  const groups = [...new Set(patients.map(p => p.group).filter(Boolean))].sort();
+  const sel = $('groupFilter');
+  sel.innerHTML = `<option value="">ทุกประเภท (${patients.length})</option>`;
+  for (const g of groups) {
+    const n = patients.filter(p => p.group === g).length;
+    const o = document.createElement('option');
+    o.value = g;
+    o.textContent = `${g} (${n})`;
+    sel.appendChild(o);
+  }
+  if (!groups.includes(groupFilter)) groupFilter = '';
+  sel.value = groupFilter;
+  sel.hidden = groups.length === 0;          // ไม่มีประเภทเลยก็ไม่ต้องมีตัวกรองให้รก
+  $('groupList').innerHTML = groups.map(g => `<option value="${g}">`).join('');
+}
+
 async function loadPatients(keepPid) {
   patients = await api('/api/patients');
+  fillGroupFilter();
+  const shown = groupFilter ? patients.filter(p => p.group === groupFilter) : patients;
   const sel = $('patientSelect');
-  const want = keepPid || currentPid || (patients[0] && patients[0].id);
+  const want = keepPid || currentPid || (shown[0] && shown[0].id);
   sel.innerHTML = '';
-  for (const p of patients) {
+  for (const p of shown) {
     const o = document.createElement('option');
     o.value = p.id;
     o.textContent = `${p.id}${p.name ? '  ' + p.name : ''}  (${p.n_images})`;
     sel.appendChild(o);
   }
-  if (!patients.length) {
+  if (!shown.length) {
     const o = document.createElement('option');
-    o.textContent = 'ยังไม่มีสัตว์ — กด "เพิ่มตัวใหม่"';
+    o.textContent = groupFilter ? 'ไม่มีสัตว์ในประเภทนี้' : 'ยังไม่มีสัตว์ — กด "เพิ่มตัวใหม่"';
     o.disabled = true;
     sel.appendChild(o);
     currentPid = null;
@@ -76,7 +102,7 @@ async function loadPatients(keepPid) {
     $('patientGrid').innerHTML = '';
     return;
   }
-  sel.value = patients.some(p => p.id === want) ? want : patients[0].id;
+  sel.value = shown.some(p => p.id === want) ? want : shown[0].id;
   selectPatient(sel.value);
 }
 
@@ -113,15 +139,50 @@ function selectPatient(pid) {
   patientData = null;
   renderPatientHead(p);
   $('patientAgg').innerHTML = '';
-  $('patientGrid').innerHTML = p && p.images.length
-    ? '<p class="hint">กด "วิเคราะห์ทั้งตัว" เพื่อประมวลผลทุกภาพของสัตว์ตัวนี้</p>'
-    : '<p class="hint">ยังไม่มีภาพ — กด "+ เพิ่มภาพ" เพื่ออัปโหลดภาพแรก</p>';
+  if (!p || !p.images.length) {
+    $('patientGrid').innerHTML = '<p class="hint">ยังไม่มีภาพ — กด "+ เพิ่มภาพ" เพื่ออัปโหลดภาพแรก</p>';
+    return;
+  }
+  // ยังไม่รู้ว่ามีผลที่จำไว้ไหม จึงยังไม่ชวนให้กดวิเคราะห์ ไม่งั้นข้อความจะแวบขึ้นมา
+  // ทุกครั้งที่เลือกสัตว์ แม้ตัวที่วิเคราะห์ไปแล้ว restorePatient เป็นคนตัดสิน
+  $('patientGrid').innerHTML = '<p class="hint">กำลังเรียกผลที่จำไว้...</p>';
+  restorePatient(pid);
+}
+
+function askToAnalyze() {
+  $('patientGrid').innerHTML =
+    '<p class="hint">กด "วิเคราะห์ทั้งตัว" เพื่อประมวลผลทุกภาพของสัตว์ตัวนี้</p>';
+}
+
+// เซิร์ฟเวอร์จำผลที่วิเคราะห์ไว้ให้แล้ว สลับกลับมาดูตัวเดิมจึงเรียกของเดิมคืนได้เลย
+// ทั้ง endpoint นี้และ run({cachedOnly}) ไม่รันโมเดลใหม่ ผู้ใช้จึงไม่ต้องรอ
+async function restorePatient(pid) {
+  let d;
+  try {
+    d = await api(`/api/patients/${encodeURIComponent(pid)}/summary`);
+  } catch (e) {
+    if (pid === currentPid) askToAnalyze();
+    return;
+  }
+  if (pid !== currentPid) return;              // ผู้ใช้เปลี่ยนตัวไปแล้วระหว่างรอ
+  if (!d.images.length) { askToAnalyze(); return; }
+  renderPatient(d);
+  if (d.pending.length) {
+    const total = d.images.length + d.pending.length;
+    $('patientGrid').insertAdjacentHTML('afterbegin',
+      `<p class="hint">แสดงผลที่จำไว้ ${d.images.length} จาก ${total} ภาพ — ` +
+      'กด "วิเคราะห์ทั้งตัว" เพื่อรันที่เหลือ</p>');
+  }
+  const names = d.images.map(i => i.image);
+  $('imageSelect').value = names.includes(lastImage[pid]) ? lastImage[pid] : names[0];
+  run({ cachedOnly: true });
 }
 
 function renderPatientHead(p) {
   if (!p) { $('patientHead').innerHTML = ''; return; }
   $('patientHead').innerHTML =
-    `<h3>${p.name || '(ยังไม่ตั้งชื่อ)'} <span class="pid">${p.id}</span></h3>` +
+    `<h3>${p.name || '(ยังไม่ตั้งชื่อ)'} <span class="pid">${p.id}</span>` +
+    (p.group ? ` <span class="tag">${p.group}</span>` : '') + '</h3>' +
     `<div class="muted">${p.note || ''}${p.created ? '  ·  เพิ่มเมื่อ ' + p.created : ''}</div>`;
 }
 
@@ -129,7 +190,7 @@ function renderPatientHead(p) {
 
 function renderPatient(d) {
   patientData = d;
-  renderPatientHead({ ...d.patient, images: [] });
+  renderPatientHead({ ...d.patient, images: [] });   // d.patient มี group มาด้วย
   const a = d.aggregate;
   const hr = a.hr_mean ? `${a.hr_mean.toFixed(0)} bpm` : '—';
   const hrRange = (a.hr_min && a.hr_max) ? `${a.hr_min.toFixed(0)}–${a.hr_max.toFixed(0)}` : '—';
@@ -154,7 +215,7 @@ function renderPatient(d) {
     const anch = im.anchor ? `<span class="tag">anchor ${im.anchor}</span>` : '';
     return `<article class="pcard">
       <div class="pcard-img"><img alt=""
-           src="/api/overlay?image=${encodeURIComponent(im.image)}&width=560&rev=${im.rev}"></div>
+           src="${u('/api/overlay')}?image=${encodeURIComponent(im.image)}&width=560&rev=${im.rev}"></div>
       <div class="pcard-body">
         <div class="pcard-title">${im.image.split('/').pop()}</div>
         <div class="pcard-stats">
@@ -229,6 +290,9 @@ function renderStats(d) {
     chip('แถวที่ติด flag', flagged, flagged ? 'bad' : ''),
     chip('landmark', s.n_landmarks ?? 0),
     d.grid ? chip('กริด 5 mm', `${d.grid.spacing_px} px`, 'good') : chip('กริด', 'ไม่พบ', 'bad'),
+    s.scale_source === 'major'
+      ? chip('ที่มาของ px/mm', 'ช่องกริดหลัก 1 ช่อง = 5 mm', 'good')
+      : chip('ที่มาของ px/mm', s.scale_source === 'manual' ? 'ตั้งเอง' : 'กริดเล็ก 1 mm'),
     d.grid && d.grid.resid_rms_px != null
       ? chip('กริดคลาดเคลื่อน', `±${d.grid.resid_rms_px} px, ไหล ${d.grid.drift_px >= 0 ? '+' : ''}${d.grid.drift_px} px`,
              Math.abs(d.grid.drift_px) < 0.5 ? 'good' : 'bad') : '',
@@ -241,6 +305,10 @@ function renderStats(d) {
     notes.push('ยังไม่ได้ตั้งคลาส R — โมเดลจุดตรวจ landmark หลายชนิด (P/Q/R/S/T) อาจได้จุดที่ไม่ใช่ R');
   if (!d.scale_ok && d.hr_from_pitch)
     notes.push(`px/mm อาจเพี้ยน: คำนวณได้ HR ~${d.hr_from_pitch.toFixed(0)} bpm ซึ่งอยู่นอกช่วงที่เป็นไปได้`);
+  if (s.scale_source === 'major')
+    notes.push('px/mm ของภาพนี้วัดจาก <b>ช่องกริดหลัก โดยถือว่า 1 ช่อง = 5 mm</b> ' +
+               'เพราะการวัดจากกริดเล็ก 1 mm ให้อัตราการเต้นที่เป็นไปไม่ได้ ' +
+               'การเลือกช่องที่ถูกต้องใช้ช่วงอัตราการเต้นที่เป็นไปได้เป็นตัวตัดสิน');
   $('warn').hidden = notes.length === 0;
   $('warn').innerHTML = notes.map(n => `⚠ ${n}`).join('<br>');
 }
@@ -325,9 +393,27 @@ function refreshOverlay() {
   img.style.maxWidth = 'none';
 }
 
+function refreshPrebin() {
+  const name = $('imageSelect').value;
+  if (!name) { $('prebin').removeAttribute('src'); $('prebinNote').textContent = ''; return; }
+  const q = new URLSearchParams({ image: name, width: $('prebinZoom').value });
+  for (const k of PRE_OPTS) {
+    const v = $(k).value;
+    if (v !== '' && v !== null) q.set(k, v);
+  }
+  $('prebin').src = u('/api/prebin?') + q;
+  const mode = $('crop_pre').value;
+  $('prebinNote').textContent = mode === 'blackhat'
+    ? 'blackhat = โดเมนเดียวกับที่ weights เห็นตอนเทรน เปลี่ยนแล้วต้องวัดผลก่อนใช้จริง'
+    : `${mode} = คนละโดเมนกับชุดเทรน กล่องอาจเพี้ยน ดูภาพเทียบก่อนตัดสินใจ`;
+}
+
 const refreshCrops = () => {
-  if (current) $('crops').src =
-    u(`/api/crops?image=${encodeURIComponent(current)}&n=8&rev=${currentRev}`);
+  if (!current) return;
+  // แท็บ binarization แสดงครอปชุดเดียวกัน ต่อท้ายภาพก่อนตีกรอบ ให้เห็นทั้งสองขั้นในหน้าเดียว
+  const src = u(`/api/crops?image=${encodeURIComponent(current)}&n=8&rev=${currentRev}`);
+  $('crops').src = src;
+  $('cropsInMask').src = src;
 };
 const refreshMask = () => {
   if (!current) return;
@@ -344,7 +430,7 @@ function setViewing(name, busy) {
 }
 
 
-async function run() {
+async function run(opts = {}) {
   const name = $('imageSelect').value;
   if (!name) { setErr('เลือกภาพก่อน'); return; }
   setErr('');
@@ -352,17 +438,19 @@ async function run() {
   $('runBtn').disabled = true;
   $('runBtn').textContent = 'กำลังตรวจจับ...';
   try {
-    const d = await jsonPost('/api/detect', { image: name, overrides: overrides() });
+    const d = await jsonPost('/api/detect',
+                             { image: name, overrides: overrides(), cached_only: !!opts.cachedOnly });
     current = name;
     currentRev = d.rev;
+    if (currentPid) lastImage[currentPid] = name;
     lastData = d;
     renderStats(d); renderTable(d); renderRR(d);
     $('csvLink').href = u('/api/csv?image=' + encodeURIComponent(name));
     $('maskIndex').max = Math.max(0, d.stats.n_boxes - 1);
-    refreshOverlay(); refreshCrops(); refreshMask();
+    refreshOverlay(); refreshCrops(); refreshMask(); refreshPrebin();
     setViewing(name, false);
   } catch (e) {
-    setErr(e.message);
+    if (!opts.cachedOnly) setErr(e.message);   // ไม่มีผลที่จำไว้ ถือเป็นเรื่องปกติ ไม่ใช่ error
     setViewing(null);
   } finally {
     $('runBtn').disabled = false;
@@ -406,14 +494,16 @@ async function deleteImage(name) {
 // ---------------------------------------------------------------- events
 
 $('patientSelect').onchange = () => selectPatient($('patientSelect').value);
-$('imageSelect').onchange = run;      // คลิกเลือกภาพ ทุกแท็บเปลี่ยนตามทันที
-$('imageSelect').ondblclick = run;
-$('runBtn').onclick = run;
+$('groupFilter').onchange = () => { groupFilter = $('groupFilter').value; loadPatients(); };
+$('imageSelect').onchange = () => run();   // คลิกเลือกภาพ ทุกแท็บเปลี่ยนตามทันที
+$('imageSelect').ondblclick = () => run();
+$('runBtn').onclick = () => run();
 $('analyzeBtn').onclick = analyzePatient;
 
 $('newPatientBtn').onclick = () => {
   $('newPatientForm').hidden = false;
   $('npId').value = ''; $('npName').value = ''; $('npNote').value = '';
+  $('npGroup').value = groupFilter;          // สร้างตัวใหม่ในประเภทที่กำลังดูอยู่
   $('npId').focus();
 };
 $('npCancel').onclick = () => { $('newPatientForm').hidden = true; };
@@ -423,7 +513,8 @@ $('newPatientForm').onsubmit = async (e) => {
   setErr('');
   try {
     const p = await jsonPost('/api/patients', {
-      id: $('npId').value.trim(), name: $('npName').value.trim(), note: $('npNote').value.trim(),
+      id: $('npId').value.trim(), name: $('npName').value.trim(),
+      note: $('npNote').value.trim(), group: $('npGroup').value.trim(),
     });
     $('newPatientForm').hidden = true;
     await loadPatients(p.id);
@@ -438,10 +529,12 @@ $('editPatientBtn').onclick = async () => {
   if (!p) return;
   const name = prompt('ชื่อสัตว์', p.name || '');
   if (name === null) return;
+  const group = prompt('ประเภท', p.group || '');
   const note = prompt('หมายเหตุ', p.note || '');
   try {
     await jsonPost(`/api/patients/${encodeURIComponent(p.id)}`,
-                   { name, note: note === null ? p.note : note }, 'PATCH');
+                   { name, group: group === null ? p.group : group,
+                     note: note === null ? p.note : note }, 'PATCH');
     await loadPatients(p.id);
   } catch (e) { setErr(e.message); }
 };
@@ -495,13 +588,21 @@ $('showOrigin').onchange = refreshOverlay;
 $('showGrid').onchange = refreshOverlay;
 $('zoom').oninput = () => { $('overlay').style.width = $('zoom').value + 'px'; };
 $('maskIndex').onchange = refreshMask;
+$('prebinZoom').oninput = refreshPrebin;
+// ปรับค่า binarization แล้วเห็นภาพใหม่ทันที ไม่ต้องรอรันตรวจจับ
+for (const k of PRE_OPTS) $(k).onchange = refreshPrebin;
 $('onlyFlagged').onchange = () => lastData && renderTable(lastData);
 
 function openTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tabpane').forEach(p => { p.hidden = p.id !== 'tab-' + name; });
 }
-document.querySelectorAll('.tab').forEach(t => { t.onclick = () => openTab(t.dataset.tab); });
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => {
+    openTab(t.dataset.tab);
+    if (t.dataset.tab === 'mask') refreshPrebin();   // ดูได้โดยไม่ต้องรันตรวจจับก่อน
+  };
+});
 
 async function loadDefaults() {
   // select ไม่มีวันว่าง มันเลือก option แรกเสมอ ถ้าเช็คแค่ค่าว่างจะได้ค่าผิด

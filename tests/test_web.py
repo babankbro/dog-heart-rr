@@ -1,5 +1,6 @@
 """ทดสอบ API ของหน้าเว็บ ในส่วนที่ไม่ต้องใช้โมเดลจริง"""
 import os
+from types import SimpleNamespace
 
 import cv2
 import pytest
@@ -176,7 +177,8 @@ def _fake_result():
 def counting_detect(client, monkeypatch):
     """นับจำนวนครั้งที่โมเดลถูกเรียกจริง"""
     calls = []
-    monkeypatch.setattr(server, 'get_models', lambda cfg: object())
+    models = SimpleNamespace(has_point=True)      # โครงเท่าที่ api_detect ใช้จริง
+    monkeypatch.setattr(server, 'get_models', lambda cfg: models)
     monkeypatch.setattr(server, 'detect_r_peaks',
                         lambda path, models, cfg: (calls.append(path), _fake_result())[1])
     return calls
@@ -214,14 +216,40 @@ def test_result_recomputed_when_file_replaced(counting_detect, tmp_path):
     assert len(counting_detect) == 2
 
 
-def test_rev_increases_only_on_real_compute(counting_detect):
+def test_rev_tracks_content_not_load_order(counting_detect):
+    """rev ไปอยู่ใน URL ของภาพที่แคชแบบ immutable จึงต้องเปลี่ยนตามเนื้อหาเท่านั้น
+
+    ถ้าใช้ตัวนับ เลขจะเริ่มใหม่ทุกครั้งที่รีสตาร์ต ภาพคนละใบได้เลขซ้ำกัน
+    แล้วเบราว์เซอร์จะหยิบภาพเก่ามาแสดงคู่กับตัวเลขชุดใหม่
+    """
     cfg = server.Config()
     server.run_detect('demo.png', cfg)
     rev1 = server._cache['demo.png']['rev']
-    server.run_detect('demo.png', cfg)
+
+    server.run_detect('demo.png', cfg, force=True)          # คำนวณใหม่ ผลเท่าเดิม
     assert server._cache['demo.png']['rev'] == rev1
-    server.run_detect('demo.png', cfg, force=True)
-    assert server._cache['demo.png']['rev'] > rev1
+
+    server.run_detect('demo.png', cfg.with_(point_pre='gray'))
+    assert server._cache['demo.png']['rev'] != rev1          # ค่าตั้งเปลี่ยน = คนละรุ่น
+
+
+def test_rev_differs_between_images(client, counting_detect):
+    """เลขรุ่นซ้ำกันข้ามภาพคือที่มาของการแสดงภาพผิดใบ"""
+    import shutil
+    shutil.copy(os.path.join(server.DATA_DIR, 'demo.png'),
+                os.path.join(server.DATA_DIR, 'demo2.png'))
+    cfg = server.Config()
+    server.run_detect('demo.png', cfg)
+    server.run_detect('demo2.png', cfg)
+    assert server._cache['demo.png']['rev'] != server._cache['demo2.png']['rev']
+
+
+def test_rev_survives_a_restart(client, counting_detect, monkeypatch):
+    cfg = server.Config()
+    server.run_detect('demo.png', cfg)
+    before = server._cache['demo.png']['rev']
+    monkeypatch.setattr(server, '_cache', {})
+    assert server.cache_hit('demo.png')['rev'] == before
 
 
 def test_png_cache_dropped_on_recompute(counting_detect):
@@ -230,3 +258,257 @@ def test_png_cache_dropped_on_recompute(counting_detect):
     server._png_cache['demo.png|overlay|1|11110|0'] = b'stale'
     server.run_detect('demo.png', cfg, force=True)
     assert not any(k.startswith('demo.png|') for k in server._png_cache)
+
+
+# ---------------------------------------------------------------- ความจำข้ามการสลับสัตว์
+
+@pytest.fixture
+def patient_with_image(client):
+    """สัตว์หนึ่งตัวที่มีภาพหนึ่งใบ พร้อมให้วิเคราะห์"""
+    client.post('/api/patients', json={'id': 'D001', 'name': 'Buddy'})
+    img, _, _ = make_ekg(w=400)
+    client.post('/api/patients/D001/images',
+                files={'files': ('a.png', cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+    return client
+
+
+def test_summary_unknown_patient(client):
+    assert client.get('/api/patients/ไม่มี/summary').status_code == 404
+
+
+def test_summary_before_analyze_lists_everything_as_pending(patient_with_image):
+    r = patient_with_image.get('/api/patients/D001/summary').json()
+    assert r['images'] == [] and r['pending'] == ['D001/a.png']
+    assert r['aggregate']['n_images'] == 0
+
+
+def test_summary_returns_remembered_result_without_rerunning(patient_with_image, counting_detect):
+    """สลับไปสัตว์ตัวอื่นแล้วกลับมา ต้องได้ผลเดิมคืนโดยไม่รันโมเดลซ้ำ"""
+    patient_with_image.post('/api/patients/D001/analyze', json={})
+    assert len(counting_detect) == 1
+
+    r = patient_with_image.get('/api/patients/D001/summary').json()
+    assert [i['image'] for i in r['images']] == ['D001/a.png']
+    assert r['pending'] == [] and r['aggregate']['n_images'] == 1
+    assert len(counting_detect) == 1          # summary ต้องไม่แตะโมเดลเลย
+
+
+def test_summary_drops_result_when_file_replaced(patient_with_image, counting_detect):
+    """ภาพถูกอัปโหลดทับ ผลที่จำไว้ใช้ไม่ได้แล้ว ต้องไม่เอามาแสดง"""
+    patient_with_image.post('/api/patients/D001/analyze', json={})
+    os.utime(os.path.join(server.DATA_DIR, 'D001', 'a.png'), (0, 0))
+    r = patient_with_image.get('/api/patients/D001/summary').json()
+    assert r['images'] == [] and r['pending'] == ['D001/a.png']
+
+
+def test_detect_cached_only_never_runs_the_model(client, counting_detect):
+    r = client.post('/api/detect', json={'image': 'demo.png', 'cached_only': True})
+    assert r.status_code == 409 and not counting_detect
+
+    client.post('/api/detect', json={'image': 'demo.png'})
+    assert len(counting_detect) == 1
+    assert client.post('/api/detect', json={'image': 'demo.png', 'cached_only': True}).status_code == 200
+    assert len(counting_detect) == 1
+
+
+def test_detect_cached_only_rejects_result_from_other_config(client, counting_detect):
+    """เปลี่ยนค่าตั้งแล้ว ผลเก่าไม่ใช่คำตอบของค่าตั้งใหม่ ต้องไม่เอามาแสดงเงียบ ๆ"""
+    client.post('/api/detect', json={'image': 'demo.png'})
+    r = client.post('/api/detect', json={'image': 'demo.png',
+                                         'overrides': {'point_pre': 'gray'}, 'cached_only': True})
+    assert r.status_code == 409 and len(counting_detect) == 1
+
+
+def test_static_files_must_be_revalidated(client):
+    """แท็บที่เปิดค้างไว้ต้องไม่รันสคริปต์เก่าต่อหลัง deploy"""
+    for path in ('/', '/app.js'):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert r.headers['cache-control'] == 'no-cache', path
+
+
+def test_patient_group_round_trips_through_api(client):
+    r = client.post('/api/patients', json={'id': 'D001', 'name': 'Buddy', 'group': 'Normal'})
+    assert r.status_code == 200 and r.json()['group'] == 'Normal'
+    assert client.get('/api/groups').json() == ['Normal']
+
+    assert client.patch('/api/patients/D001', json={'group': 'B1'}).json()['group'] == 'B1'
+    assert client.get('/api/patients').json()[0]['group'] == 'B1'
+
+
+def test_patient_summary_carries_group(client):
+    client.post('/api/patients', json={'id': 'D001', 'group': 'Normal'})
+    assert client.get('/api/patients/D001/summary').json()['patient']['group'] == 'Normal'
+
+
+# ---------------------------------------------------------------- ผลรอดการรีสตาร์ต
+
+def restart(monkeypatch):
+    """จำลองรีสตาร์ต: หน่วยความจำหายหมด ดิสก์ยังอยู่"""
+    monkeypatch.setattr(server, '_cache', {})
+    monkeypatch.setattr(server, '_png_cache', {})
+
+
+def test_result_survives_restart_without_rerunning(client, counting_detect, monkeypatch):
+    client.post('/api/detect', json={'image': 'demo.png'})
+    assert len(counting_detect) == 1
+    assert client.get('/api/health').json()['saved_results'] == 1
+
+    restart(monkeypatch)
+    r = client.post('/api/detect', json={'image': 'demo.png', 'cached_only': True})
+    assert r.status_code == 200                      # ยังได้ผลเดิมทั้งที่แคชว่าง
+    assert len(counting_detect) == 1                 # และไม่ได้แตะโมเดลเลย
+
+
+def test_patient_summary_reads_from_disk_after_restart(client, counting_detect, monkeypatch):
+    client.post('/api/patients', json={'id': 'D001'})
+    img, _, _ = make_ekg(w=400)
+    client.post('/api/patients/D001/images',
+                files={'files': ('a.png', cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+    client.post('/api/patients/D001/analyze', json={})
+    assert len(counting_detect) == 1
+
+    restart(monkeypatch)
+    r = client.get('/api/patients/D001/summary').json()
+    assert [i['image'] for i in r['images']] == ['D001/a.png'] and r['pending'] == []
+    assert len(counting_detect) == 1
+
+
+def test_overlay_works_after_restart(client, counting_detect, monkeypatch):
+    """endpoint ที่ต้องวาดภาพต้องอ่านภาพต้นฉบับคืนเองได้ ไม่ใช่ตอบว่ายังไม่ได้รัน"""
+    client.post('/api/detect', json={'image': 'demo.png'})
+    restart(monkeypatch)
+    assert client.get('/api/overlay', params={'image': 'demo.png'}).status_code == 200
+
+
+def test_stored_result_ignored_when_image_replaced(client, counting_detect, monkeypatch):
+    client.post('/api/detect', json={'image': 'demo.png'})
+    os.utime(os.path.join(server.DATA_DIR, 'demo.png'), (0, 0))
+    restart(monkeypatch)
+    r = client.post('/api/detect', json={'image': 'demo.png', 'cached_only': True})
+    assert r.status_code == 409 and len(counting_detect) == 1
+
+
+def test_deleting_image_removes_its_stored_result(client, counting_detect, monkeypatch):
+    client.post('/api/patients', json={'id': 'D001'})
+    img, _, _ = make_ekg(w=400)
+    client.post('/api/patients/D001/images',
+                files={'files': ('a.png', cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+    client.post('/api/detect', json={'image': 'D001/a.png'})
+    assert client.get('/api/health').json()['saved_results'] == 1
+
+    client.delete('/api/patients/D001/images', params={'name': 'a.png'})
+    assert client.get('/api/health').json()['saved_results'] == 0
+
+
+def test_deleting_patient_removes_stored_results(client, counting_detect):
+    client.post('/api/patients', json={'id': 'D001'})
+    img, _, _ = make_ekg(w=400)
+    client.post('/api/patients/D001/images',
+                files={'files': ('a.png', cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+    client.post('/api/detect', json={'image': 'D001/a.png'})
+    client.delete('/api/patients/D001', params={'with_images': 1})
+    assert client.get('/api/health').json()['saved_results'] == 0
+
+
+def test_only_a_few_source_images_are_held_in_memory(client, counting_detect, monkeypatch):
+    """ชุดข้อมูลหลายสิบภาพต้องไม่ทำให้ภาพต้นฉบับค้างในหน่วยความจำทั้งหมด"""
+    monkeypatch.setattr(server, '_RAW_CACHE_MAX', 2)
+    img, _, _ = make_ekg(w=200)
+    blob = cv2.imencode('.png', img)[1].tobytes()
+    for i in range(4):
+        with open(os.path.join(server.DATA_DIR, f'x{i}.png'), 'wb') as f:
+            f.write(blob)
+        client.get('/api/overlay', params={'image': f'x{i}.png'})   # 409 ก็ไม่เป็นไร
+        client.post('/api/detect', json={'image': f'x{i}.png'})
+
+    holding = [k for k, v in server._cache.items() if v['result'].get('raw') is not None]
+    assert len(holding) <= 2 and len(server._cache) == 4             # ผลตัวเลขยังอยู่ครบ
+
+
+# ---------------------------------------------------------------- ดู binarization ก่อนตีกรอบ
+
+def test_prebin_works_without_running_detection(client):
+    """เป็นแค่ preprocessing จึงต้องดูได้ทันที ไม่ต้องรอผลตรวจจับ"""
+    r = client.get('/api/prebin', params={'image': 'demo.png', 'width': 400})
+    assert r.status_code == 200 and r.headers['content-type'] == 'image/png'
+
+
+def test_prebin_reflects_the_chosen_method(client):
+    """คนละวิธี = คนละภาพ ไม่งั้นปรับค่าแล้วดูไม่ออกว่าเปลี่ยนอะไร"""
+    a = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'blackhat'}).content
+    b = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'red'}).content
+    assert a != b
+
+
+def test_prebin_reflects_tuning_knobs(client):
+    base = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'red'}).content
+    thick = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'red',
+                                              'crop_pre_dilate': 3}).content
+    assert base != thick
+
+
+def test_prebin_rejects_an_unknown_method(client):
+    r = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'ไม่มีวิธีนี้'})
+    assert r.status_code == 400
+
+
+def test_prebin_guards_path_traversal(client):
+    assert client.get('/api/prebin', params={'image': '../secret.png'}).status_code == 404
+
+
+def test_binarization_knobs_are_tunable_from_the_web(client):
+    cfg = client.get('/api/config').json()
+    for k in ('crop_pre', 'blackhat_thr', 'crop_pre_hyst', 'crop_pre_close', 'crop_pre_dilate'):
+        assert k in cfg, k
+    r = client.post('/api/detect', json={'image': 'demo.png', 'overrides': {'crop_pre': 'มั่ว'}})
+    assert r.status_code == 400
+
+
+def test_crop_marker_uses_the_training_anchor(client, counting_detect, monkeypatch):
+    """กากบาทในแท็บครอปคือจุดที่ชุดเทรนวาง R ไว้ ใช้เทียบว่าครอปของเราหน้าตาตรงกันไหม
+
+    เคยวางไว้กลางภาพเมื่อ crop_mode=train_match ซึ่งเป็นค่าเริ่มต้น ทำให้เทียบผิด
+    """
+    from ekg_rpeak.geometry import expected_center
+    cfg = server.Config()
+    assert cfg.crop_mode == 'train_match'
+    ex, ey = expected_center(cfg)
+    assert (ex, ey) != (cfg.out_size / 2, cfg.out_size / 2)
+
+    drawn = []
+    monkeypatch.setattr(server.cv2, 'drawMarker',
+                        lambda img, pt, *a, **k: drawn.append(pt))
+    img, _, _ = make_ekg(w=900)
+    cv2.imwrite(os.path.join(server.DATA_DIR, 'wide.png'), img)
+    monkeypatch.setattr(server, 'detect_r_peaks',
+                        lambda path, models, c: _real_result(path, c))
+    client.post('/api/detect', json={'image': 'wide.png'})
+    r = client.get('/api/crops', params={'image': 'wide.png', 'n': 1, 'size': 200})
+    if r.status_code == 200 and drawn:
+        assert drawn[0] == (int(ex * 200 / cfg.out_size), int(ey * 200 / cfg.out_size))
+
+
+def _real_result(path, cfg):
+    """ผลจำลองที่มีกล่องจริงพอให้ /api/crops ทำงานได้ โดยไม่ต้องใช้โมเดล"""
+    import numpy as np
+    from ekg_rpeak.imageio import imread_u
+    raw = imread_u(path)
+    h, w = raw.shape[:2]
+    boxes = np.array([[80, 40, 140, h - 40], [240, 40, 300, h - 40],
+                      [400, 40, 460, h - 40]], dtype=int)
+    res = _fake_result()
+    res['raw'] = raw
+    res['boxes'] = boxes
+    res['rows'] = [list(boxes)]
+    return res
+
+
+def test_tophat_knobs_are_tunable_from_the_web(client):
+    """tophat_gray เป็นค่าเริ่มต้นแล้ว knob ของมันต้องปรับได้จากเว็บเหมือน blackhat thr"""
+    cfg = client.get('/api/config').json()
+    assert cfg['crop_pre_ksize'] and cfg['crop_pre_thr']
+    a = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'tophat_gray'}).content
+    b = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'tophat_gray',
+                                          'crop_pre_thr': 45}).content
+    assert a != b

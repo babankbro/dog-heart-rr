@@ -46,6 +46,32 @@ def test_load_defaults_assigns_select_values():
 
 def test_options_list_covers_config_choices():
     """ตัวเลือกในหน้าเว็บต้องไม่หลุดจากที่ไปป์ไลน์รองรับ"""
-    assert set(options_of('point_pre')) == {'ink', 'gray', 'gray_contrast', 'none'}
+    from ekg_rpeak.preprocess import POINT_PRE_MODES
+    assert set(options_of('point_pre')) == set(POINT_PRE_MODES)
     assert set(options_of('point_mode')) == {'refine', 'model_only', 'anchor_only'}
     assert {'train_match', 'mm'} <= set(options_of('crop_mode'))
+
+
+def test_crop_pre_select_matches_server_default():
+    """เพิ่ม select ใหม่แล้วต้องไม่ทำบั๊กเดิมซ้ำ: option แรกต้องเป็นค่าเริ่มต้นจริง"""
+    opts = options_of('crop_pre')
+    assert opts[0] == Config().crop_pre
+    from ekg_rpeak.preprocess import CROP_PRE_MODES
+    assert set(opts) == set(CROP_PRE_MODES)
+
+
+def test_binarization_knobs_are_wired_to_the_preview():
+    """ปรับค่าแล้วภาพต้องอัปเดตเอง ไม่ใช่ต้องกดรันใหม่"""
+    assert 'PRE_OPTS' in JS
+    assert re.search(r"for \(const k of PRE_OPTS\) \$\(k\)\.onchange = refreshPrebin", JS)
+    for k in ('crop_pre', 'blackhat_thr', 'crop_pre_hyst', 'crop_pre_close', 'crop_pre_dilate'):
+        assert f'id="{k}"' in HTML, k
+
+
+def test_tophat_knobs_are_in_both_pages():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dbg = open(os.path.join(root, 'webapp', 'static', 'debug.html'), encoding='utf-8').read()
+    for k in ('crop_pre_thr', 'crop_pre_ksize'):
+        assert f'id="{k}"' in HTML, k
+        assert dbg.count(f'data-k="{k}"') == 2, k
+        assert k in JS

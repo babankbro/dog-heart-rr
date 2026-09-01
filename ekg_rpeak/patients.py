@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 from .imageio import imread_u, list_images
 
 INDEX_NAME = 'patients.json'
+# ฟิลด์ที่ทุกระเบียนต้องมี พร้อมค่าเริ่มต้นสำหรับดัชนีเก่าที่ยังไม่มีฟิลด์นี้
+FIELD_DEFAULTS = {'name': '', 'note': '', 'group': '', 'created': ''}
 ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,32}$')
 # ชื่อไฟล์รูปแบบ "<รหัส> <ชื่อ><ลำดับ>.jpg" เช่น "D001 Buddy 1.jpg", "C003 Snow 2.jpg"
 NAME_RE = re.compile(r'^\s*([A-Za-z0-9_-]+)\s+(.*?)\s*(\d+)?\s*$')
@@ -33,7 +35,8 @@ def load_index(data_dir: str) -> Dict[str, dict]:
             raw = json.load(f)
     except (OSError, ValueError):
         return {}
-    return {p['id']: p for p in raw.get('patients', []) if p.get('id')}
+    return {p['id']: {**FIELD_DEFAULTS, **p}
+            for p in raw.get('patients', []) if p.get('id')}
 
 
 def save_index(data_dir: str, patients: Dict[str, dict]) -> None:
@@ -80,12 +83,18 @@ def list_patients(data_dir: str) -> List[dict]:
         for name in sorted(os.listdir(data_dir)):
             d = os.path.join(data_dir, name)
             if os.path.isdir(d) and valid_id(name) and name not in seen:
-                seen[name] = {'id': name, 'name': '', 'note': '', 'created': ''}
+                seen[name] = {'id': name, **FIELD_DEFAULTS}
     out = []
     for pid, rec in sorted(seen.items()):
         imgs = list_patient_images(data_dir, pid)
-        out.append({**rec, 'id': pid, 'n_images': len(imgs), 'images': imgs})
+        out.append({**FIELD_DEFAULTS, **rec, 'id': pid,
+                    'n_images': len(imgs), 'images': imgs})
     return out
+
+
+def list_groups(data_dir: str) -> List[str]:
+    """ประเภทที่มีสัตว์อยู่จริง เรียงตามตัวอักษร ใช้ทำตัวกรองในหน้าเว็บ"""
+    return sorted({p['group'] for p in list_patients(data_dir) if p.get('group')})
 
 
 def get_patient(data_dir: str, pid: str) -> Optional[dict]:
@@ -95,7 +104,8 @@ def get_patient(data_dir: str, pid: str) -> Optional[dict]:
     return None
 
 
-def create_patient(data_dir: str, pid: str, name: str = '', note: str = '') -> dict:
+def create_patient(data_dir: str, pid: str, name: str = '', note: str = '',
+                   group: str = '') -> dict:
     if not valid_id(pid):
         raise ValueError(f'รหัสไม่ถูกต้อง: {pid!r} (ใช้ได้เฉพาะ A-Z a-z 0-9 _ - ไม่เกิน 32 ตัว)')
     idx = load_index(data_dir)
@@ -103,18 +113,17 @@ def create_patient(data_dir: str, pid: str, name: str = '', note: str = '') -> d
         raise FileExistsError(f'มีรหัส {pid} อยู่แล้ว')
     os.makedirs(patient_dir(data_dir, pid), exist_ok=True)
     idx[pid] = {'id': pid, 'name': name.strip(), 'note': note.strip(),
-                'created': date.today().isoformat()}
+                'group': group.strip(), 'created': date.today().isoformat()}
     save_index(data_dir, idx)
     return {**idx[pid], 'n_images': 0, 'images': []}
 
 
-def update_patient(data_dir: str, pid: str, name=None, note=None) -> dict:
+def update_patient(data_dir: str, pid: str, name=None, note=None, group=None) -> dict:
     idx = load_index(data_dir)
-    rec = idx.get(pid) or {'id': pid, 'name': '', 'note': '', 'created': ''}
-    if name is not None:
-        rec['name'] = name.strip()
-    if note is not None:
-        rec['note'] = note.strip()
+    rec = idx.get(pid) or {'id': pid, **FIELD_DEFAULTS}
+    for key, val in (('name', name), ('note', note), ('group', group)):
+        if val is not None:
+            rec[key] = val.strip()
     idx[pid] = rec
     save_index(data_dir, idx)
     return get_patient(data_dir, pid)
@@ -182,7 +191,7 @@ def migrate_flat_images(data_dir: str) -> dict:
             shutil.move(p, dest)
         moved.append(os.path.relpath(dest, data_dir).replace(os.sep, '/'))
         if pid not in idx:
-            idx[pid] = {'id': pid, 'name': name, 'note': '',
+            idx[pid] = {'id': pid, 'name': name, 'note': '', 'group': '',
                         'created': date.today().isoformat()}
         elif not idx[pid].get('name') and name:
             idx[pid]['name'] = name

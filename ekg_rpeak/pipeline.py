@@ -13,9 +13,9 @@ from .geometry import (dedup_landmarks, dedup_peaks, expected_center, group_rows
                        median_rr, pick_point, row_pitch, square_crop, unmap_point)
 from .grid import find_grid, grid_origin, refine_grid, summarize_rr, to_mm
 from .imageio import imread_u
-from .preprocess import (blackhat_preprocess, drop_edge_non_beats,
+from .preprocess import (crop_preprocess, drop_edge_non_beats,
                          find_r_anchor, point_preprocess)
-from .scale import resolve_px_per_mm
+from .scale import check_scale, px_per_mm_from_major, resolve_px_per_mm
 
 
 @dataclass
@@ -52,7 +52,7 @@ def batch_predict(model, crops: List[np.ndarray], conf: float, iou: float,
 
 def detect_boxes(raw: np.ndarray, models: Models, cfg: Config) -> np.ndarray:
     """ชั้นที่ 1 — กล่องของแต่ละจังหวะ (โมเดลนี้เทรนบนภาพ Blackhat)"""
-    res = models.crop.predict(blackhat_preprocess(raw, cfg), conf=cfg.crop_conf,
+    res = models.crop.predict(crop_preprocess(raw, cfg), conf=cfg.crop_conf,
                               iou=cfg.crop_iou, imgsz=cfg.crop_imgsz,
                               save=False, verbose=False)[0]
     if len(res.boxes) == 0:
@@ -101,6 +101,19 @@ def detect_r_peaks(image_path: str, models: Models, cfg: Config) -> dict:
             trimmed.append(kept)
     rows = trimmed
     boxes = np.array([b for row in rows for b in row], dtype=int) if rows else np.zeros((0, 4), int)
+
+    # ตรวจว่าสเกลที่ได้จากกริดเล็กให้อัตราการเต้นที่เป็นไปได้ไหม ถ้าไม่ ให้วัดใหม่จาก
+    # ช่องกริดหลัก (หนึ่งช่อง = cfg.grid_mm มิลลิเมตร) ซึ่งเป็นเส้นที่เข้มและนับได้ชัดกว่า
+    scale_source = 'manual' if cfg.px_per_mm else ('minor' if px_mm else 'none')
+    ref_pitch_px = next((row_pitch(r) for r in rows if row_pitch(r)), None)
+    # เคารพการปิดการประมาณสเกล — ผู้ใช้ที่สั่งไม่ให้เดา ต้องไม่ได้ค่าที่เดามาให้
+    if not cfg.px_per_mm and cfg.auto_px_per_mm and cfg.scale_source in ('auto', 'major'):
+        _, ok = check_scale(px_mm, ref_pitch_px, cfg.paper_speed_mm_s,
+                            cfg.scale_hr_lo, cfg.scale_hr_hi)
+        if cfg.scale_source == 'major' or not ok:
+            alt = px_per_mm_from_major(raw, cfg, ref_pitch_px)
+            if alt:
+                px_mm, scale_source = alt, 'major'
 
     # ระบบพิกัดอ้างอิงจากเส้นกริดหลัก 5 mm — แม่นกว่ากริดเล็กเพราะเฉลี่ยจากหลายสิบเส้น
     grid = find_grid(raw, cfg, px_mm)
@@ -175,6 +188,7 @@ def detect_r_peaks(image_path: str, models: Models, cfg: Config) -> dict:
              'n_dup': n_dup, 'n_model': n_model, 'n_anchor': n_anchor,
              'n_reject': n_reject, 'n_far': n_far, 'n_landmarks': len(landmarks),
              'n_edge_dropped': n_edge, 'px_per_mm': px_mm,
+             'scale_source': scale_source,
              'grid_spacing_px': grid['spacing'] if grid else None,
              'grid_lines': len(grid['lines']) if grid else 0,
              'grid_resid_px': grid.get('resid_rms_px') if grid else None,
@@ -182,6 +196,9 @@ def detect_r_peaks(image_path: str, models: Models, cfg: Config) -> dict:
              'grid_origin_px': origin}
     rr = {ri: summarize_rr([p['x'] for p in peaks if p['row'] == ri], px_mm, cfg)
           for ri in range(len(rows))}
+    # แถวหลัก = แถวที่มีจังหวะมากที่สุด ไม่ใช่แถวแรกเสมอไป — เศษกล่องที่ขอบภาพ
+    # ถูกจัดเป็นแถวของตัวเองได้ ถ้ารายงานจากแถวแรกดื้อ ๆ ตัวเลขทั้งภาพจะหายไป
+    main_row = max(range(len(rows)), key=lambda i: len(rows[i])) if rows else 0
     return {'raw': raw, 'boxes': boxes, 'rows': rows, 'peaks': peaks,
             'landmarks': landmarks, 'stats': stats, 'grid': grid,
-            'origin': origin, 'rr': rr}
+            'origin': origin, 'rr': rr, 'main_row': main_row}

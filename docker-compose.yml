@@ -22,6 +22,7 @@ services:
       target: test
     volumes:
       - ./ekg_rpeak:/app/ekg_rpeak:ro
+      - ./webapp:/app/webapp:ro
       - ./tests:/app/tests:ro
     command: ["pytest", "-v"]
 
@@ -46,6 +47,7 @@ services:
       target: runtime
     volumes:
       - ./ekg_rpeak:/app/ekg_rpeak:ro
+      - ./webapp:/app/webapp:ro
       - ./tests:/app/tests:ro
       - ./models:/app/models:ro
       - ./data:/app/data:ro

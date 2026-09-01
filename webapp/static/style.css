@@ -154,3 +154,31 @@ tr.anchor td:nth-child(7) { color: var(--warn); }
 .viewing b { color: var(--fg); }
 .viewing .spin { color: var(--accent); }
 select#imageSelect option:checked { background: #24405e; }
+
+.secttl {
+  margin: 1.2rem 0 .4rem;
+  font-size: .95rem;
+  color: var(--fg, #dbe2ea);
+}
+.secttl:first-child { margin-top: 0; }
+
+/* หน้าเทียบสองชุด */
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+.side { border: 1px solid #2a3140; border-radius: 8px; padding: .8rem; min-width: 0; }
+.side h2 { margin-top: 0; }
+.shot { margin: .8rem 0; }
+.shot img { max-width: 100%; display: block; border: 1px solid #2a3140; }
+.shot figcaption { font-size: .8rem; opacity: .75; margin: .2rem 0; }
+@media (max-width: 900px) { .cmp { grid-template-columns: 1fr; } }
+.dbglink { font-size: .85rem; opacity: .8; margin-left: 1rem; }
+.dbg { padding: 1rem 1.2rem; }
+.dbg h1 { font-size: 1.15rem; }
+.fromdata { margin: .5rem 0; font-size: .85rem; }
+.fromdata summary { cursor: pointer; opacity: .85; }
+.fromdata .dataList { width: 100%; margin: .4rem 0; font-size: .8rem; }
+.fromdata .filter { flex: 1 1 8rem; min-width: 0; }
+.tbl.methods { margin-bottom: .8rem; }
+.tbl.methods td { vertical-align: top; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable.on { color: #7aa2f7; }
+.sem { opacity: .6; font-size: .85em; }

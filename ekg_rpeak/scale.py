@@ -1,5 +1,5 @@
 """หาสเกลของกระดาษ (พิกเซลต่อมิลลิเมตร) จากเส้นกริด และตรวจความสมเหตุสมผล"""
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -78,6 +78,71 @@ def check_scale(px_per_mm: Optional[float], pitch_px: Optional[float],
         return None, False
     hr = 60.0 / rr_sec
     return hr, (lo_bpm <= hr <= hi_bpm)
+
+
+def grid_periods(img_bgr: np.ndarray, lo: int = 8, rel: float = 0.30) -> List[Tuple[float, float]]:
+    """คาบที่โปรไฟล์กริดสนับสนุน คืน [(คาบพิกเซล, ความแรง)] เรียงจากแรงไปอ่อน
+
+    ค้นในช่วงกว้างโดยไม่ตัดสินว่าคาบไหนคือกริดเล็กหรือกริดหลัก เพราะการเลือกเองที่นี่
+    คือที่มาของความผิดพลาดแบบ octave error ปล่อยให้ผู้เรียกตัดสินด้วยข้อมูลอื่น
+    """
+    prof = grid_profile(img_bgr).astype(np.float64)
+    n = prof.size
+    if n < 200:
+        return []
+    prof = prof - cv2.GaussianBlur(prof.reshape(1, -1), (0, 0), 120.0).ravel()
+    prof = prof - prof.mean()
+    f = np.fft.rfft(prof, 2 * n)
+    ac = np.fft.irfft(f * np.conj(f))[:n]
+    if ac[0] <= 0:
+        return []
+    ac = ac / ac[0]
+    hi = int(n // 6)
+    seg = ac[lo:hi + 1]
+    if seg.size < 5:
+        return []
+    pk = [i for i in range(1, seg.size - 1) if seg[i] > seg[i - 1] and seg[i] >= seg[i + 1]]
+    if not pk:
+        return []
+    top = max(seg[i] for i in pk)
+    out = []
+    for i in pk:
+        if seg[i] < rel * top:
+            continue
+        y0, y1, y2 = seg[i - 1], seg[i], seg[i + 1]
+        d = y0 - 2 * y1 + y2
+        off = 0.5 * (y0 - y2) / d if d != 0 else 0.0
+        out.append((lo + i + float(np.clip(off, -0.5, 0.5)), float(seg[i])))
+    return sorted(out, key=lambda t: -t[1])
+
+
+def px_per_mm_from_major(img_bgr: np.ndarray, cfg, pitch_px: Optional[float]) -> Optional[float]:
+    """px ต่อ mm โดยถือว่าหนึ่งช่องกริดหลักเท่ากับ cfg.grid_mm มิลลิเมตร
+
+    โปรไฟล์กริดมียอดที่คาบมูลฐานและที่พหุคูณของมัน การเลือกเองว่าอันไหนคือช่องหลัก
+    ทำให้ผิดเป็นจำนวนเท่า จึงใช้ช่วงอัตราการเต้นที่เป็นไปได้ทางสรีรวิทยาเป็นตัวตัดสิน
+    โดยคำนวณจากระยะระหว่างจังหวะที่วัดได้แล้ว วิธีนี้เป็นการใช้ความรู้ล่วงหน้า
+    ไม่ใช่การวัด จึงต้องรายงานให้ผู้ใช้เห็นเสมอว่าค่านี้มาจากทางนี้
+
+    ถ้าไม่มีคาบใดให้อัตราการเต้นที่เป็นไปได้ คืน None แล้วให้ผู้เรียกใช้ค่าเดิม
+    """
+    cands = grid_periods(img_bgr)
+    if not cands:
+        return None
+    plausible = []
+    for period, strength in cands:
+        ppm = period / cfg.grid_mm
+        if ppm <= 0:
+            continue
+        if pitch_px:
+            hr, ok = check_scale(ppm, pitch_px, cfg.paper_speed_mm_s,
+                                 cfg.scale_hr_lo, cfg.scale_hr_hi)
+            if not ok:
+                continue
+        plausible.append((strength, ppm))
+    if not plausible:
+        return None
+    return max(plausible)[1]
 
 
 def resolve_px_per_mm(raw: np.ndarray, cfg) -> Optional[float]:
