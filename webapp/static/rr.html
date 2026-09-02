@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>สรุป RR รายตัว — EKG R-Peak Viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>EKG R-Peak Viewer</h1>
+  <div class="health"><a href="./">กลับหน้าหลัก</a></div>
+</header>
+<main class="content dbg">
+<h1>สรุปช่วง RR ของสัตว์แต่ละตัว</h1>
+<p class="hint">รวมค่า RR จากทุกภาพของสัตว์ตัวเดียวกัน แล้วสรุปด้วยสามวิธีเพื่อเทียบกัน
+  ค่าทั้งหมดคิดจากผลที่วิเคราะห์ไว้แล้ว ไม่ได้รันโมเดลใหม่</p>
+
+<div class="row toolbar">
+  <label class="chk"><input id="excl" type="checkbox" checked>
+    ตัดภาพที่สเกลน่าสงสัยออก</label>
+  <a id="csv" class="btn ghost" href="#">ดาวน์โหลด CSV</a>
+  <span id="note" class="legend"></span>
+</div>
+
+<div id="warn" class="warn" hidden></div>
+<div id="agg" class="stats"></div>
+
+<h3 class="secttl">วิธีสรุปทั้งสาม</h3>
+<table class="tbl methods">
+  <tr><th>วิธี</th><th>คำนวณอย่างไร</th><th>จุดแข็ง / จุดอ่อน</th></tr>
+  <tr><td><b>mean_all</b></td><td>เฉลี่ยค่า RR ทุกช่วงของสัตว์ตัวนั้น</td>
+      <td>ใช้ข้อมูลครบ แต่ถูกช่วงที่ยาวผิดปกติจากจังหวะที่หายลากง่ายที่สุด</td></tr>
+  <tr><td><b>mid20</b></td><td>เรียงค่า RR แล้วเอา 20 ค่าตรงกลางมาเฉลี่ย</td>
+      <td>ตัดหางทั้งสองข้างทิ้ง ทนค่าผิดปกติโดยยังใช้ข้อมูลเชิงปริมาณ</td></tr>
+  <tr><td><b>median</b></td><td>มัธยฐานของค่า RR ทุกช่วง</td>
+      <td>ทนค่าผิดปกติที่สุด แต่ความไม่แน่นอนของค่ากลางกว้างกว่า</td></tr>
+</table>
+
+<h3 class="secttl">ตารางผล</h3>
+<p class="hint">คลิกหัวคอลัมน์เพื่อเรียงลำดับ · ค่าในวงเล็บคือ ± ความคลาดเคลื่อนของค่ากลาง (SEM)
+  · <b>ต่างสุด</b> คือความไม่ลงรอยระหว่างสามวิธี ยิ่งสูงยิ่งแปลว่ามีค่าผิดปกติปนอยู่</p>
+<div class="scroller"><table id="tbl" class="tbl"></table></div>
+</main>
+<script src="rr.js"></script>
+</body>
+</html>

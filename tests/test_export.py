@@ -110,3 +110,30 @@ def test_single_dropped_beat_is_still_flagged(cfg, ekg_path):
     r['stats']['n_rows'] = 1
     rows = result_to_rows(path, r, cfg)
     assert sum(1 for row in rows if row['flag'] == 'missed_beat?') == 1
+
+
+def test_main_row_is_the_row_with_most_beats():
+    """เศษกล่องที่ขอบภาพถูกจัดเป็นแถวของตัวเองได้ ต้องไม่ถูกเข้าใจว่าเป็น lead หลัก"""
+    import numpy as np
+    from ekg_rpeak.config import Config
+    from ekg_rpeak.export import median_hr
+
+    result = {
+        'stats': {'px_per_mm': 8.0, 'n_rows': 2},
+        'rows': [[np.array([0, 0, 5, 5])], [np.array([0, 0, 5, 5])] * 9],
+        'peaks': ([{'row': 0, 'x': 10.0}] +
+                  [{'row': 1, 'x': float(100 + 80 * i)} for i in range(9)]),
+        'main_row': 1,
+    }
+    hr = median_hr(result, Config())
+    assert hr is not None and 100 < hr < 400        # คิดจากแถวที่ 1 ไม่ใช่แถวที่ 0
+    assert median_hr(result, Config(), row=0) is None
+
+
+def test_main_row_defaults_to_zero_when_absent():
+    """ผลรุ่นเก่าที่ยังไม่มี main_row ต้องอ่านได้เหมือนเดิม"""
+    from ekg_rpeak.config import Config
+    from ekg_rpeak.export import median_hr
+    result = {'stats': {'px_per_mm': 8.0, 'n_rows': 1},
+              'peaks': [{'row': 0, 'x': 0.0}, {'row': 0, 'x': 80.0}]}
+    assert median_hr(result, Config()) is not None

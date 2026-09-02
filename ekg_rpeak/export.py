@@ -1,7 +1,7 @@
 """แปลงผลตรวจจับเป็นแถว CSV พร้อม RR-interval, heart rate และ flag คุณภาพ"""
 import csv
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -71,8 +71,13 @@ def result_to_rows(image_path: str, result: dict, cfg: Config) -> List[Dict]:
     return out
 
 
-def median_hr(result: dict, cfg: Config, row: int = 0):
-    """HR สรุปคิดจาก RR มัธยฐาน — ค่าเฉลี่ยของ bpm รายคู่ถูก outlier ลากง่าย"""
+def median_hr(result: dict, cfg: Config, row: Optional[int] = None):
+    """HR สรุปคิดจาก RR มัธยฐาน — ค่าเฉลี่ยของ bpm รายคู่ถูก outlier ลากง่าย
+
+    ไม่ระบุแถว = ใช้แถวหลัก (แถวที่มีจังหวะมากที่สุด)
+    """
+    if row is None:
+        row = result.get('main_row', 0)
     px_mm = result['stats']['px_per_mm']
     xs = [p['x'] for p in result['peaks'] if p['row'] == row]
     if not px_mm or len(xs) < 2:

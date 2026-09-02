@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>เทียบสองชุด — EKG R-Peak Viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>EKG R-Peak Viewer</h1>
+  <div class="health"><a href="./">กลับหน้าหลัก</a></div>
+</header>
+<main class="content dbg">
+<h1>เทียบสองชุด — เทรน / เทส</h1>
+<p class="hint">อัปโหลดภาพของแต่ละชุด ตั้งค่าประมวลผลแยกกันได้ (คนละที่มา ไม่ต้องเหมือนกัน)
+  แล้วรันไปป์ไลน์เต็มทั้งสองฝั่งเพื่อเทียบผลลัพธ์ ภาพที่อัปโหลดไปอยู่ที่ <code>out/debug/</code>
+  ไม่ปนกับข้อมูลผู้ป่วยใน <code>data/</code></p>
+<div id="err" class="warn" hidden></div>
+
+<div id="agg" class="stats"></div>
+
+<div class="cmp">
+  <section class="side" data-side="train">
+    <h2>ชุดเทรน</h2>
+    <div class="row">
+      <input type="file" class="pick" multiple accept=".jpg,.jpeg,.png">
+      <button class="btn tiny ghost danger clear">ล้างชุด</button>
+    </div>
+    <details class="fromdata">
+      <summary>หรือเลือกจากภาพที่มีอยู่แล้วใน data/</summary>
+      <p class="hint">เลือกได้ทุกภาพในระบบ ไม่คัดลอกไฟล์ เลือกเยอะแล้วรันจะใช้เวลาราว 2 วินาทีต่อภาพ</p>
+      <div class="row">
+        <input type="search" class="filter" placeholder="กรองด้วยชื่อ / รหัส / ประเภท">
+        <button class="btn tiny ghost selAll">เลือกทั้งหมดที่เห็น</button>
+        <button class="btn tiny ghost selNone">ไม่เลือกเลย</button>
+      </div>
+      <select class="dataList" multiple size="10"></select>
+      <div class="row">
+        <button class="btn tiny usePicked">ใช้ภาพที่เลือก</button>
+        <span class="pickNote hint"></span>
+      </div>
+    </details>
+    <div class="files hint"></div>
+    <div class="grid2 opts">
+      <label>binarization
+        <select data-k="crop_pre">
+          <option value="tophat_red">tophat_red</option>
+          <option value="tophat_gray">tophat_gray</option>
+          <option value="blackhat">blackhat</option>
+          <option value="blackhat_otsu">blackhat_otsu</option>
+          <option value="adaptive">adaptive</option>
+          <option value="ink">ink</option>
+          <option value="red">red</option>
+        </select>
+      </label>
+      <label>preprocessing จุด
+        <select data-k="point_pre">
+          <option value="red_ink">red_ink</option>
+          <option value="ink">ink</option>
+          <option value="red_contrast">red_contrast</option>
+          <option value="gray">gray</option>
+          <option value="gray_contrast">gray_contrast</option>
+          <option value="none">none</option>
+        </select>
+      </label>
+      <label>crop conf <input type="number" step="0.05" data-k="crop_conf"></label>
+      <label>blackhat thr <input type="number" step="1" data-k="blackhat_thr"></label>
+      <label>tophat thr <input type="number" step="1" data-k="crop_pre_thr"></label>
+      <label>tophat ksize <input type="number" step="2" data-k="crop_pre_ksize"></label>
+      <label>frame w <input type="number" step="0.01" data-k="train_frame_w_ratio"></label>
+      <label>frame h <input type="number" step="0.01" data-k="train_frame_h_ratio"></label>
+      <label>hysteresis <input type="number" step="0.05" min="0" max="1" data-k="crop_pre_hyst"></label>
+      <label>เชื่อมเส้นขาด <input type="number" step="2" min="0" max="15" data-k="crop_pre_close"></label>
+      <label>ทำเส้นหนา <input type="number" step="1" min="0" max="6" data-k="crop_pre_dilate"></label>
+    </div>
+
+    <h3 class="secttl">ภาพหลัง binarization ก่อนตีกรอบ</h3>
+    <p class="hint">ปรับค่าด้านบนแล้วภาพนี้เปลี่ยนทันที ไม่ต้องรัน ใช้ไล่ค่าจนจังหวะที่หายกลับมา
+      แล้วค่อยกดรัน</p>
+    <div class="row">
+      <select class="prebinPick"></select>
+      <label>ความกว้าง <input class="prebinW" type="range" min="600" max="4000" step="100" value="1200"></label>
+    </div>
+    <div class="scroller"><img class="prebinImg" alt=""></div>
+
+    <button class="btn primary run">รันชุดนี้</button>
+    <div class="sideAgg stats"></div>
+    <div class="scroller"><table class="tbl"></table></div>
+    <div class="shots"></div>
+  </section>
+
+  <section class="side" data-side="test">
+    <h2>ชุดเทส</h2>
+    <div class="row">
+      <input type="file" class="pick" multiple accept=".jpg,.jpeg,.png">
+      <button class="btn tiny ghost danger clear">ล้างชุด</button>
+    </div>
+    <details class="fromdata">
+      <summary>หรือเลือกจากภาพที่มีอยู่แล้วใน data/</summary>
+      <p class="hint">เลือกได้ทุกภาพในระบบ ไม่คัดลอกไฟล์ เลือกเยอะแล้วรันจะใช้เวลาราว 2 วินาทีต่อภาพ</p>
+      <div class="row">
+        <input type="search" class="filter" placeholder="กรองด้วยชื่อ / รหัส / ประเภท">
+        <button class="btn tiny ghost selAll">เลือกทั้งหมดที่เห็น</button>
+        <button class="btn tiny ghost selNone">ไม่เลือกเลย</button>
+      </div>
+      <select class="dataList" multiple size="10"></select>
+      <div class="row">
+        <button class="btn tiny usePicked">ใช้ภาพที่เลือก</button>
+        <span class="pickNote hint"></span>
+      </div>
+    </details>
+    <div class="files hint"></div>
+    <div class="grid2 opts">
+      <label>binarization
+        <select data-k="crop_pre">
+          <option value="tophat_red">tophat_red</option>
+          <option value="tophat_gray">tophat_gray</option>
+          <option value="blackhat">blackhat</option>
+          <option value="blackhat_otsu">blackhat_otsu</option>
+          <option value="adaptive">adaptive</option>
+          <option value="ink">ink</option>
+          <option value="red">red</option>
+        </select>
+      </label>
+      <label>preprocessing จุด
+        <select data-k="point_pre">
+          <option value="red_ink">red_ink</option>
+          <option value="ink">ink</option>
+          <option value="red_contrast">red_contrast</option>
+          <option value="gray">gray</option>
+          <option value="gray_contrast">gray_contrast</option>
+          <option value="none">none</option>
+        </select>
+      </label>
+      <label>crop conf <input type="number" step="0.05" data-k="crop_conf"></label>
+      <label>blackhat thr <input type="number" step="1" data-k="blackhat_thr"></label>
+      <label>tophat thr <input type="number" step="1" data-k="crop_pre_thr"></label>
+      <label>tophat ksize <input type="number" step="2" data-k="crop_pre_ksize"></label>
+      <label>frame w <input type="number" step="0.01" data-k="train_frame_w_ratio"></label>
+      <label>frame h <input type="number" step="0.01" data-k="train_frame_h_ratio"></label>
+      <label>hysteresis <input type="number" step="0.05" min="0" max="1" data-k="crop_pre_hyst"></label>
+      <label>เชื่อมเส้นขาด <input type="number" step="2" min="0" max="15" data-k="crop_pre_close"></label>
+      <label>ทำเส้นหนา <input type="number" step="1" min="0" max="6" data-k="crop_pre_dilate"></label>
+    </div>
+
+    <h3 class="secttl">ภาพหลัง binarization ก่อนตีกรอบ</h3>
+    <p class="hint">ปรับค่าด้านบนแล้วภาพนี้เปลี่ยนทันที ไม่ต้องรัน ใช้ไล่ค่าจนจังหวะที่หายกลับมา
+      แล้วค่อยกดรัน</p>
+    <div class="row">
+      <select class="prebinPick"></select>
+      <label>ความกว้าง <input class="prebinW" type="range" min="600" max="4000" step="100" value="1200"></label>
+    </div>
+    <div class="scroller"><img class="prebinImg" alt=""></div>
+
+    <button class="btn primary run">รันชุดนี้</button>
+    <div class="sideAgg stats"></div>
+    <div class="scroller"><table class="tbl"></table></div>
+    <div class="shots"></div>
+  </section>
+</div>
+
+</main>
+<script src="debug.js"></script>
+</body>
+</html>

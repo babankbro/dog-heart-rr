@@ -152,3 +152,34 @@ def test_index_survives_corrupt_file(data):
         f.write('{ไม่ใช่ json')
     assert pt.load_index(data) == {}               # ไม่พังทั้งระบบ
     assert [p['id'] for p in pt.list_patients(data)] == ['A1']   # ยังเห็นจากโฟลเดอร์
+
+
+# ---------------------------------------------------------------- ประเภทของสัตว์
+
+def test_group_is_stored_and_listed(tmp_path):
+    d = str(tmp_path)
+    pt.create_patient(d, 'D001', 'Buddy', group='Normal')
+    pt.create_patient(d, 'D002', 'Coco', group='B1')
+    pt.create_patient(d, 'D003', 'Mo')                    # ไม่ระบุประเภท
+    by_id = {p['id']: p for p in pt.list_patients(d)}
+    assert by_id['D001']['group'] == 'Normal' and by_id['D003']['group'] == ''
+    assert pt.list_groups(d) == ['B1', 'Normal']          # ตัวที่ไม่มีประเภทไม่ถูกนับ
+
+
+def test_group_can_be_edited_without_touching_other_fields(tmp_path):
+    d = str(tmp_path)
+    pt.create_patient(d, 'D001', 'Buddy', note='โน้ตเดิม', group='Normal')
+    pt.update_patient(d, 'D001', group='B1')
+    p = pt.get_patient(d, 'D001')
+    assert (p['group'], p['name'], p['note']) == ('B1', 'Buddy', 'โน้ตเดิม')
+
+
+def test_index_without_group_still_loads(tmp_path):
+    """ดัชนีที่เขียนไว้ก่อนมีฟิลด์ group ต้องอ่านได้ ไม่ใช่ KeyError"""
+    d = str(tmp_path)
+    (tmp_path / 'patients.json').write_text(
+        '{"patients": [{"id": "D001", "name": "Buddy", "note": "", "created": "2026-01-01"}]}',
+        encoding='utf-8')
+    assert pt.get_patient(d, 'D001')['group'] == ''
+    pt.update_patient(d, 'D001', name='Buddy2')
+    assert pt.get_patient(d, 'D001')['group'] == ''

@@ -10,6 +10,8 @@
 <header>
   <h1>EKG R-Peak Viewer</h1>
   <div id="health" class="health"></div>
+  <a class="dbglink" href="rr.html">สรุป RR รายตัว</a>
+  <a class="dbglink" href="debug.html">เทียบสองชุด (debug)</a>
 </header>
 
 <main>
@@ -20,6 +22,7 @@
         <button id="migrateBtn" class="btn tiny ghost"
                 title="ย้ายภาพที่วางแบน ๆ ใน data/ เข้าโฟลเดอร์ตามรหัสในชื่อไฟล์">จัดกลุ่มภาพเดิม</button>
       </div>
+      <select id="groupFilter" title="กรองตามประเภท"></select>
       <select id="patientSelect" size="6"></select>
       <div class="row">
         <button id="newPatientBtn" class="btn">+ เพิ่มตัวใหม่</button>
@@ -30,6 +33,8 @@
       <form id="newPatientForm" class="subform" hidden>
         <label>รหัส <input id="npId" type="text" placeholder="เช่น D001" required></label>
         <label>ชื่อ <input id="npName" type="text" placeholder="เช่น Buddy"></label>
+        <label>ประเภท <input id="npGroup" type="text" placeholder="เช่น Normal" list="groupList"></label>
+        <datalist id="groupList"></datalist>
         <label>หมายเหตุ <input id="npNote" type="text" placeholder="พันธุ์ / อายุ / อาการ"></label>
         <div class="row">
           <button type="submit" class="btn primary tiny">สร้าง</button>
@@ -82,12 +87,34 @@
       </label>
       <label>preprocessing ของโมเดลจุด
         <select id="point_pre">
-          <option value="ink">ink — ลบกริด (ตรงกับ weights ปัจจุบัน)</option>
+          <option value="red_ink">red_ink — ลบกริดด้วยแชนเนลแดง + ดึงคอนทราสต์ (ค่าเริ่มต้น)</option>
+          <option value="ink">ink — ลบกริดด้วย saturation (ตรงกับ weights ที่เทรน)</option>
+          <option value="red_contrast">red_contrast — แชนเนลแดง ดึงคอนทราสต์ ไม่ binarize</option>
           <option value="gray">gray</option>
           <option value="gray_contrast">gray_contrast</option>
           <option value="none">none</option>
         </select>
       </label>
+      <label>binarization ก่อนตีกรอบ
+        <select id="crop_pre">
+          <option value="tophat_red">tophat_red — ลบพื้นหลังบนแชนเนลแดง กริดหายมากสุด (ค่าเริ่มต้น)</option>
+          <option value="tophat_gray">tophat_gray — ลบพื้นหลังด้วย closing บนภาพเทา</option>
+          <option value="blackhat">blackhat — ตรงกับชุดเทรน</option>
+          <option value="blackhat_otsu">blackhat_otsu — เกณฑ์ปรับตามภาพ</option>
+          <option value="adaptive">adaptive — threshold ตามหน้าต่าง</option>
+          <option value="ink">ink — ตัดกริดด้วยสี</option>
+          <option value="red">red — ใช้แชนเนลแดง กริดหายเอง</option>
+        </select>
+      </label>
+      <div class="grid2">
+        <label>blackhat thr <input id="blackhat_thr" type="number" step="1" min="0" max="60"></label>
+        <label>tophat thr <input id="crop_pre_thr" type="number" step="1" min="1" max="80"></label>
+        <label>tophat ksize <input id="crop_pre_ksize" type="number" step="2" min="3" max="51"></label>
+        <label>hysteresis <input id="crop_pre_hyst" type="number" step="0.05" min="0" max="1"></label>
+        <label>เชื่อมเส้นขาด <input id="crop_pre_close" type="number" step="2" min="0" max="15"></label>
+        <label>ทำเส้นหนา <input id="crop_pre_dilate" type="number" step="1" min="0" max="6"></label>
+      </div>
+      <p class="hint">สองช่องล่างและ hysteresis ใช้กับทุกวิธียกเว้น blackhat ซึ่งต้องคงไว้ให้ตรงชุดเทรน</p>
       <div class="grid2">
         <label>คลาส R <input id="r_class_id" type="number" placeholder="5"></label>
         <label>px ต่อ mm <input id="px_per_mm" type="number" step="0.1" placeholder="auto"></label>
@@ -107,7 +134,7 @@
       <button class="tab" data-tab="overlay">ภาพผลลัพธ์</button>
       <button class="tab" data-tab="rr">RR interval (mm)</button>
       <button class="tab" data-tab="crops">ครอปที่ป้อนโมเดล</button>
-      <button class="tab" data-tab="mask">ink mask</button>
+      <button class="tab" data-tab="mask">binarization + preprocessing</button>
       <button class="tab" data-tab="table">ตารางจุด R</button>
     </nav>
 
@@ -144,6 +171,22 @@
     </div>
 
     <div id="tab-mask" class="tabpane" hidden>
+      <h3 class="secttl">binarization ที่ป้อนโมเดลครอป (ก่อนตีกรอบ)</h3>
+      <p class="hint">นี่คือภาพที่โมเดลครอปเห็นจริง ปรับค่าในแถบ "ตัวเลือก" แล้วภาพนี้เปลี่ยนทันที
+        โดยไม่ต้องรันตรวจจับใหม่ ดูสองอย่าง: ปลายยอด R ยังอยู่ครบไหม และกริดเหลือมากจนกลบเส้นหรือเปล่า</p>
+      <div class="row toolbar">
+        <label>ความกว้าง <input id="prebinZoom" type="range" min="600" max="6000" step="100" value="1600"></label>
+        <span id="prebinNote" class="legend"></span>
+      </div>
+      <div class="scroller"><img id="prebin" alt=""></div>
+
+      <h3 class="secttl">preprocessing ที่ป้อนโมเดลจุด (หลังตัดครอป)</h3>
+      <p class="hint">ครอปจริงที่ส่งเข้าโมเดลจุด ผ่าน <b>preprocessing ของโมเดลจุด</b> ในแถบตัวเลือกแล้ว
+        กากบาทเขียว = ตำแหน่งที่ชุดเทรนวางยอด R ไว้ (ราว 10% จากขอบบน) ครอปพวกนี้ควรหน้าตา
+        เหมือนภาพชุดเทรนโมเดลจุด</p>
+      <div class="scroller"><img id="cropsInMask" alt=""></div>
+
+      <h3 class="secttl">ink mask ของจังหวะเดียว (ใช้หายอด R ด้วย image processing)</h3>
       <p class="hint">ซ้าย = ภาพจริงของจังหวะ ขวา = ink mask ที่ใช้หายอด R ถ้ามีแถบตั้งพาดเต็มความสูงแปลว่าเส้นกริดหลุดเข้ามา<br>
         <i class="dot green"></i>anchor จาก image processing <i class="dot red"></i>R จากโมเดล <i class="dot orange"></i>R ที่ใช้ค่าจาก anchor <i class="dot faint"></i>landmark อื่น</p>
       <label>จังหวะที่ <input id="maskIndex" type="number" min="0" value="0" style="width:5rem"></label>
