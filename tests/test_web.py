@@ -512,3 +512,73 @@ def test_tophat_knobs_are_tunable_from_the_web(client):
     b = client.get('/api/prebin', params={'image': 'demo.png', 'crop_pre': 'tophat_gray',
                                           'crop_pre_thr': 45}).content
     assert a != b
+
+
+# ---------------------------------------------------------------- CSV รวมทั้งตัว
+
+def seed_result(client, pid, name, n_rows=3):
+    """ใส่ผลจำลองที่มีแถว CSV จริงเข้าแคช — ตัว stub ของ detect สร้าง 0 แถว"""
+    client.post('/api/patients', json={'id': pid})
+    img, _, _ = make_ekg(w=400)
+    client.post(f'/api/patients/{pid}/images',
+                files={'files': (name, cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+    key = f'{pid}/{name}'
+    path = os.path.join(server.DATA_DIR, pid, name)
+    res = _fake_result()
+    server._cache[key] = {
+        'result': res, 'cfg': server.Config(), 'path': path,
+        'mtime': os.path.getmtime(path), 'rev': 'x', 'width': 10, 'height': 10,
+        'rows': [{f: '' for f in server.FIELDS} | {'image': name, 'row': 0, 'r_index': i}
+                 for i in range(n_rows)],
+    }
+    return key
+
+
+def test_patient_csv_pools_every_image(client):
+    """ดาวน์โหลดครั้งเดียวได้ทุกภาพของสัตว์ตัวนั้น แทนที่จะกดทีละภาพ"""
+    seed_result(client, 'D001', 'a.png')
+    seed_result(client, 'D001', 'b.png')
+
+    r = client.get('/api/patients/D001/csv')
+    assert r.status_code == 200
+    assert r.headers['x-images-used'] == '2' and r.headers['x-images-missing'] == '0'
+    assert 'D001_r_peaks.csv' in r.headers['content-disposition']
+
+    import csv as _csv
+    import io as _io
+    rows = list(_csv.DictReader(_io.StringIO(r.content.decode('utf-8-sig'))))
+    assert 'image' in rows[0], 'ต้องบอกได้ว่าแต่ละแถวมาจากภาพไหน'
+    assert {row['image'] for row in rows} == {'a.png', 'b.png'}
+
+
+def test_patient_csv_skips_images_that_have_no_result(client):
+    """ภาพที่ยังไม่วิเคราะห์ถูกข้าม และรายงานจำนวนไว้ใน header"""
+    seed_result(client, 'D001', 'done.png')
+    img, _, _ = make_ekg(w=400)
+    client.post('/api/patients/D001/images',
+                files={'files': ('todo.png', cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+
+    r = client.get('/api/patients/D001/csv')
+    assert r.status_code == 200
+    assert r.headers['x-images-used'] == '1' and r.headers['x-images-missing'] == '1'
+
+
+def test_patient_csv_never_runs_the_model(client, counting_detect):
+    """เป็นการรวมผลที่มีอยู่ ไม่ใช่การสั่งวิเคราะห์ — จะได้ไม่ค้างรอเป็นนาที"""
+    seed_result(client, 'D001', 'a.png')
+    before = len(counting_detect)
+    client.get('/api/patients/D001/csv')
+    assert len(counting_detect) == before
+
+
+def test_patient_csv_without_any_result_is_a_clear_error(client):
+    client.post('/api/patients', json={'id': 'D001'})
+    img, _, _ = make_ekg(w=400)
+    client.post('/api/patients/D001/images',
+                files={'files': ('a.png', cv2.imencode('.png', img)[1].tobytes(), 'image/png')})
+    r = client.get('/api/patients/D001/csv')
+    assert r.status_code == 409 and 'วิเคราะห์' in r.json()['detail']
+
+
+def test_patient_csv_unknown_patient(client):
+    assert client.get('/api/patients/ไม่มี/csv').status_code == 404

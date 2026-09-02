@@ -138,6 +138,7 @@ function selectPatient(pid) {
   clearImageView();          // ภาพของตัวก่อนหน้าต้องหายไปทันทีที่เปลี่ยนตัว
   patientData = null;
   renderPatientHead(p);
+  setPatientCsv(pid, p);
   $('patientAgg').innerHTML = '';
   if (!p || !p.images.length) {
     $('patientGrid').innerHTML = '<p class="hint">ยังไม่มีภาพ — กด "+ เพิ่มภาพ" เพื่ออัปโหลดภาพแรก</p>';
@@ -176,6 +177,18 @@ async function restorePatient(pid) {
   const names = d.images.map(i => i.image);
   $('imageSelect').value = names.includes(lastImage[pid]) ? lastImage[pid] : names[0];
   run({ cachedOnly: true });
+}
+
+function setPatientCsv(pid, p) {
+  const a = $('csvAllLink');
+  const n = p && p.images ? p.images.length : 0;
+  if (!pid || !n) {
+    a.removeAttribute('href');
+    a.textContent = 'CSV ทุกภาพของตัวนี้';
+    return;
+  }
+  a.href = u(`/api/patients/${encodeURIComponent(pid)}/csv`);
+  a.textContent = `CSV ทุกภาพของตัวนี้ (${n} ภาพ)`;
 }
 
 function renderPatientHead(p) {

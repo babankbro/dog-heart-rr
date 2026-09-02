@@ -117,3 +117,10 @@ def test_debug_page_defaults_to_what_the_model_actually_uses(field):
     หน้านั้นเลยรันด้วย ink เงียบ ๆ ทั้งที่โมเดลใช้ red_ink ผลที่เอามาเทียบจึงคนละวิธี
     """
     assert debug_select_options(field)[0] == getattr(Config(), field)
+
+
+def test_table_tab_offers_a_whole_patient_download():
+    """ปุ่มรวมต้องผูกกับสัตว์ที่เลือก ไม่ใช่ภาพที่กำลังดู"""
+    assert 'id="csvAllLink"' in HTML
+    assert 'setPatientCsv' in JS
+    assert re.search(r"/api/patients/\$\{encodeURIComponent\(pid\)\}/csv", JS)

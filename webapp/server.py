@@ -478,6 +478,34 @@ def api_csv(image: str):
     return FileResponse(out, media_type='text/csv', filename=os.path.basename(out))
 
 
+@app.get('/api/patients/{pid}/csv')
+def api_patient_csv(pid: str):
+    """CSV ของทุกภาพของสัตว์ตัวนี้รวมเป็นไฟล์เดียว
+
+    อ่านจากผลที่คำนวณไว้แล้วเท่านั้น ไม่รันโมเดลใหม่ ภาพที่ยังไม่ได้วิเคราะห์จะถูกข้าม
+    คอลัมน์ image บอกอยู่แล้วว่าแต่ละแถวมาจากภาพไหน จึงรวมไฟล์ได้โดยไม่เสียข้อมูล
+    """
+    p = pt.get_patient(DATA_DIR, pid)
+    if not p:
+        raise HTTPException(404, f'ไม่พบรหัส {pid}')
+    rows, missing = [], []
+    for name in p['images']:
+        rec = cache_hit(name)
+        if rec is None:
+            missing.append(name)
+            continue
+        rows += rec['rows']
+    if not rows:
+        raise HTTPException(409, 'ยังไม่มีผลของสัตว์ตัวนี้ กด "วิเคราะห์ทั้งตัว" ก่อน')
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    out = os.path.join(OUT_DIR, f'{pid}_r_peaks.csv')
+    write_csv(rows, out)
+    return FileResponse(out, media_type='text/csv', filename=os.path.basename(out),
+                        headers={'X-Images-Used': str(len(p['images']) - len(missing)),
+                                 'X-Images-Missing': str(len(missing))})
+
+
 # ---------------------------------------------------------------- ทะเบียนสัตว์
 
 @app.get('/api/patients')
