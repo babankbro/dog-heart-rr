@@ -171,8 +171,14 @@ select#imageSelect option:checked { background: #24405e; }
 .shot figcaption { font-size: .8rem; opacity: .75; margin: .2rem 0; }
 @media (max-width: 900px) { .cmp { grid-template-columns: 1fr; } }
 .dbglink { font-size: .85rem; opacity: .8; margin-left: 1rem; }
-.dbg { padding: 1rem 1.2rem; }
+
+/* main ถูกตั้งเป็น grid 300px + 1fr สำหรับหน้าหลักที่มีแถบข้าง
+   หน้าที่ไม่มีแถบข้างต้องล้างทิ้ง ไม่งั้นเนื้อหาไปตกในคอลัมน์ 300px แล้วตารางแคบมาก */
+main.dbg { display: block; padding: 1rem 1.4rem; }
 .dbg h1 { font-size: 1.15rem; }
+.dbg .scroller { max-height: 82vh; }
+.dbg #tbl { font-size: .92rem; }
+.dbg #tbl th, .dbg #tbl td { padding: .45rem .8rem; }
 .fromdata { margin: .5rem 0; font-size: .85rem; }
 .fromdata summary { cursor: pointer; opacity: .85; }
 .fromdata .dataList { width: 100%; margin: .4rem 0; font-size: .8rem; }

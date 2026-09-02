@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 import numpy as np
 
 from .config import Config
-from .geometry import (dedup_landmarks, dedup_peaks, expected_center, group_rows,
+from .geometry import (dedup_landmarks, dedup_limit, dedup_peaks, expected_center, group_rows,
                        median_rr, pick_point, row_pitch, square_crop, unmap_point)
 from .grid import find_grid, grid_origin, refine_grid, summarize_rr, to_mm
 from .imageio import imread_u
@@ -176,7 +176,8 @@ def detect_r_peaks(image_path: str, models: Models, cfg: Config) -> dict:
     peaks, n_dup = [], 0
     for ri, pts in enumerate(per_row):
         med = median_rr(pts)
-        kept = dedup_peaks(pts, cfg.dedup_ratio * med) if med > 0 else sorted(pts, key=lambda p: p[0])
+        kept = (dedup_peaks(pts, dedup_limit(med, px_mm, cfg)) if med > 0
+                else sorted(pts, key=lambda p: p[0]))
         n_dup += len(pts) - len(kept)
         for i, p in enumerate(kept):
             peaks.append({'row': ri, 'index': i, 'x': p[0], 'y': p[1],

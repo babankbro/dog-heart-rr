@@ -46,6 +46,20 @@ def median_rr(pts: Sequence) -> float:
     return float(np.median(np.diff(xs)))
 
 
+def dedup_limit(median_rr_px: float, px_per_mm: Optional[float], cfg: Config) -> float:
+    """ระยะที่ใกล้กว่านี้ถือว่าเป็นจุดซ้ำจากกล่องที่ซ้อนกัน
+
+    เกณฑ์จากมัธยฐาน RR สมมติว่าจังหวะสม่ำเสมอ ถ้าหัวใจเต้นไม่สม่ำเสมอ เช่นเต้นเป็นคู่
+    แล้วเว้นช่วงยาว มัธยฐานจะสะท้อนช่วงยาว แล้วไปตัดจังหวะคู่ที่ชิดกันทิ้งทั้งที่เป็นของจริง
+    จึงคุมด้วยระยะ RR ที่สั้นที่สุดเท่าที่เป็นไปได้ทางสรีรวิทยา — สองจุดที่ห่างกว่านั้น
+    เป็นคนละจังหวะแน่นอน
+    """
+    lim = cfg.dedup_ratio * median_rr_px
+    if px_per_mm and cfg.scale_hr_hi > 0:
+        lim = min(lim, 60.0 / cfg.scale_hr_hi * cfg.paper_speed_mm_s * px_per_mm)
+    return lim
+
+
 def dedup_peaks(pts: Sequence, min_dist_px: float) -> List:
     """refractory period — จุดที่ใกล้กันเกินไปคือจุดซ้ำจากกล่องที่ซ้อนกัน"""
     out: List = []

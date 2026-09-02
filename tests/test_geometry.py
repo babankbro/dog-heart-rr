@@ -155,3 +155,43 @@ def test_shift_inside_avoids_padding(cfg, ekg):
     assert m['X1'] == 0 and m['ox'] == 0
     plain = crop_to_square(img, (-30.0, 10.0, 120.0, 120.0), cfg)[1]
     assert plain['ox'] > 0                       # โหมดปกติยังเติมขอบเหมือนเดิม
+
+
+# ---------------------------------------------------------------- เกณฑ์ตัดจุดซ้ำ
+
+def test_dedup_limit_is_capped_by_the_shortest_possible_beat():
+    """หัวใจที่เต้นไม่สม่ำเสมอมีคู่จังหวะที่ชิดกันมาก มัธยฐานจึงไม่ใช่ตัวแทนที่ดี
+
+    เคสจริงที่เจอ: c60714 gongphop 1 เต้นเป็นคู่ห่าง 136 px แล้วเว้นช่วง 292 px
+    เกณฑ์เดิม 0.5 x 292 = 146 px ตัดจังหวะจริงทิ้งไปสองจุด
+    """
+    from ekg_rpeak.config import Config
+    from ekg_rpeak.geometry import dedup_limit
+    cfg = Config()
+    px_mm = 10.39
+    lim = dedup_limit(292.0, px_mm, cfg)
+    assert lim < 136, f'เกณฑ์ {lim:.0f} px ยังตัดจังหวะที่ห่าง 136 px ทิ้ง'
+
+    # ขีดจำกัดมาจากอัตราการเต้นสูงสุดที่เป็นไปได้ ไม่ใช่ตัวเลขที่ตั้งขึ้นลอย ๆ
+    expected = 60.0 / cfg.scale_hr_hi * cfg.paper_speed_mm_s * px_mm
+    assert lim == pytest.approx(expected)
+
+
+def test_dedup_limit_still_removes_real_duplicates():
+    """กล่องที่ซ้อนกันรายงานยอดเดียวกัน ระยะจะเกือบศูนย์ ต้องยังถูกตัด"""
+    from ekg_rpeak.config import Config
+    from ekg_rpeak.geometry import dedup_limit, dedup_peaks
+    cfg = Config()
+    lim = dedup_limit(292.0, 10.39, cfg)
+    pts = [(1000.0, 0.0, 0.9, 'model', 5), (1004.0, 0.0, 0.5, 'model', 5),
+           (1136.0, 0.0, 0.8, 'model', 5)]
+    kept = dedup_peaks(pts, lim)
+    assert [round(p[0]) for p in kept] == [1000, 1136]
+
+
+def test_dedup_limit_falls_back_to_the_median_rule_without_a_scale():
+    """ไม่รู้ px/mm ก็คำนวณขีดจำกัดทางสรีรวิทยาไม่ได้ ต้องใช้กฎเดิม"""
+    from ekg_rpeak.config import Config
+    from ekg_rpeak.geometry import dedup_limit
+    cfg = Config()
+    assert dedup_limit(292.0, None, cfg) == pytest.approx(cfg.dedup_ratio * 292.0)
